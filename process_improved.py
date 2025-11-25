@@ -95,8 +95,8 @@ class Config:
     
     # === Modèle et fichiers ===
     model_id: str = "intfloat/multilingual-e5-small"
-    input_csv: str = "articles_fictifs.csv"
-    output_csv: str = "articles_final.csv"
+    input_csv: str = "data/articles_fictifs.csv"
+    output_csv: str = "data/articles_final.csv"
     report_json: str = "articles_report.json"
     cache_dir: str = ".cache_embeddings"
     allowed_langs: Tuple[str, ...] = ("fr", "en")

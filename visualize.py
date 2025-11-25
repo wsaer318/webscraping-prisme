@@ -944,7 +944,7 @@ def main():
     parser = argparse.ArgumentParser(description="Visualisations pour le pipeline ameliore")
     parser.add_argument("--report", type=str, default="articles_report.json",
                        help="Chemin vers le rapport JSON")
-    parser.add_argument("--csv", type=str, default="articles_final.csv",
+    parser.add_argument("--csv", type=str, default="data/articles_final.csv",
                        help="Chemin vers le CSV final")
     parser.add_argument("--output", type=str, default="visualizations",
                        help="Repertoire de sortie")

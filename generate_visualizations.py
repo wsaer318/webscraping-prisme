@@ -19,7 +19,7 @@ def main():
     
     # Vérifier les fichiers nécessaires
     report_file = "articles_report.json"
-    csv_file = "articles_final.csv"
+    csv_file = "data/articles_final.csv"
     
     if not os.path.exists(report_file):
         print(f"[ERREUR] Fichier rapport introuvable: {report_file}")

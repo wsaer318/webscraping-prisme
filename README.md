@@ -141,6 +141,9 @@ source venv/bin/activate
 
 # Installer les dépendances
 pip install -r requirements_improved.txt
+
+# Note : Sur Windows, si vous rencontrez des problèmes avec PyTorch :
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
 ### Installation rapide (dépendances minimales)
@@ -156,36 +159,57 @@ pip install numpy pandas scipy scikit-learn torch sentence-transformers rank-bm2
 ### Génération de données de test
 
 ```bash
-python generate_data.py --n-pos 200 --n-neg 150 --seed 42 --out articles_fictifs.csv
+python generate_data.py --n-pos 200 --n-neg 150 --seed 42 --out data/articles_fictifs.csv
 ```
 
 ### Exécution du pipeline
 
-```python
-from process_improved import ArticlePipeline, PipelineConfig
+#### Méthode simple (configuration par défaut)
 
-# Configuration
-config = PipelineConfig(
+```bash
+python process_improved.py
+```
+
+Le pipeline utilisera les paramètres par défaut :
+- Requête principale : "l'effet de la lumière sur le comportement des chats"
+- Fichier d'entrée : `data/articles_fictifs.csv`
+- Fichier de sortie : `data/articles_final.csv`
+- Rapport : `articles_report.json`
+
+#### Méthode avancée (configuration personnalisée)
+
+```python
+from process_improved import Config, main
+
+# Créer une configuration personnalisée
+config = Config(
     query_main="intelligence artificielle machine learning",
+    input_csv="data/articles_fictifs.csv",
+    output_csv="data/articles_final.csv",
+    report_json="articles_report.json",
     threshold_method="ensemble",
-    cluster_method="dbscan",
+    cluster_method="hdbscan",  # ou "dbscan", "graph_cc"
     mmr_topk=50,
-    mmr_lambda=0.7
+    mmr_lambda=0.7,
+    fusion_method="rrf",  # ou "linear_z", "rank_pct"
+    batch_size=16,
+    use_gpu=False,  # Mettre à True si GPU disponible
 )
 
-# Initialisation et exécution
-pipeline = ArticlePipeline(config)
-pipeline.load_data("articles_fictifs.csv")
-df_final = pipeline.run()
-
-# Sauvegarde des résultats
-pipeline.save_results("articles_final.csv", "articles_report.json")
+# Exécuter le pipeline
+report = main(config)
 ```
 
 ### Génération des visualisations
 
 ```bash
 python generate_visualizations.py
+```
+
+Ou avec des chemins personnalisés :
+
+```bash
+python visualize.py --report articles_report.json --csv data/articles_final.csv --output visualizations
 ```
 
 Les visualisations seront générées dans le dossier `visualizations/`.
@@ -198,55 +222,116 @@ Les visualisations seront générées dans le dossier `visualizations/`.
 projet_filtre/
 ├── 📄 README.md                          # Documentation principale
 ├── 📄 requirements_improved.txt          # Dépendances Python
-├── 🐍 generate_data.py                   # Générateur d'articles fictifs
-├── 🐍 process_improved.py                # Pipeline principal (cœur du système)
-├── 🐍 generate_visualizations.py         # Script de génération de graphiques
-├── 🐍 visualize.py                       # Utilitaires de visualisation
-├── 📊 articles_fictifs.csv               # Données d'entrée (exemple)
-├── 📊 articles_final.csv                 # Résultats finaux
-├── 📊 articles_final_embeddings.npy      # Embeddings sauvegardés
-├── 📋 articles_report.json               # Rapport détaillé JSON
-├── 📝 pipeline.log                       # Logs d'exécution
+├── 📄 .gitignore                         # Fichiers ignorés par Git
+├── 🐍 generate_data.py                   # Générateur d'articles fictifs pour tests
+├── 🐍 process_improved.py                # Pipeline principal (cœur du système, ~1850 lignes)
+├── 🐍 generate_visualizations.py         # Script wrapper pour générer les graphiques
+├── 🐍 visualize.py                       # Module de visualisation (classe PipelineVisualizer)
+├── 📁 data/                             # Données du projet
+│   ├── 📊 articles_fictifs.csv           # Données d'entrée (générées par generate_data.py)
+│   └── 📊 articles_final.csv             # Résultats finaux du pipeline
+├── 📁 .cache_embeddings/                # Cache des embeddings (créé automatiquement)
+├── 📊 articles_final_embeddings.npy      # Embeddings sauvegardés des articles sélectionnés
+├── 📋 articles_report.json               # Rapport détaillé JSON avec métriques
+├── 📝 pipeline.log                       # Logs d'exécution structurés
 └── 📁 visualizations/                    # Graphiques générés
-    ├── 01_score_distributions.png
-    ├── 02_threshold_analysis.png
-    ├── 03_pipeline_flow.png
-    ├── 04_clusters_2d.png
-    ├── 05_top_articles.png
-    ├── 06_score_correlation.png
-    ├── 07_similarity_heatmap.png
-    ├── 08_text_lengths.png
-    ├── 09_cluster_boxplots.png
-    ├── 10_quality_radar.png
-    ├── 11_score_table.png
-    ├── 12_embeddings_3d.png
-    └── README.md
+    ├── 01_score_distributions.png       # Distribution des scores (embedding, BM25, final)
+    ├── 02_threshold_analysis.png         # Analyse du seuillage automatique
+    ├── 03_pipeline_flow.png              # Diagramme de flux (entonnoir de filtrage)
+    ├── 04_clusters_2d.png                # Projection t-SNE des clusters
+    ├── 05_top_articles.png               # Top articles par score
+    ├── 06_score_correlation.png          # Matrice de corrélation entre scores
+    ├── 07_similarity_heatmap.png         # Heatmap de similarité entre articles
+    ├── 08_text_lengths.png                # Distribution des longueurs de texte
+    ├── 09_cluster_boxplots.png           # Boxplots des scores par cluster
+    ├── 10_quality_radar.png              # Radar chart des métriques de qualité
+    ├── 11_score_table.png                # Table comparative des méthodes de scoring
+    ├── 12_embeddings_3d.png              # Projection 3D des embeddings (PCA)
+    └── README.md                         # Documentation des visualisations
 ```
+
+### Fichiers générés automatiquement
+
+Lors de l'exécution du pipeline, les fichiers suivants sont créés :
+- `articles_report.json` : Rapport complet avec statistiques, métriques et diagnostics
+- `data/articles_final.csv` : Articles sélectionnés avec scores détaillés
+- `articles_final_embeddings.npy` : Embeddings des articles finaux (pour visualisation 3D)
+- `pipeline.log` : Logs d'exécution (format structuré)
+- `.cache_embeddings/` : Cache des embeddings pour éviter les recalculs
 
 ---
 
 ## ⚙️ Configuration
 
-Le pipeline est hautement configurable via la classe `PipelineConfig` :
+Le pipeline est hautement configurable via la classe `Config` dans `process_improved.py` :
 
 ### Paramètres principaux
 
-| Paramètre | Description | Valeurs | Défaut |
-|-----------|-------------|---------|--------|
-| `query_main` | Requête de recherche principale | string | `""` |
+| Paramètre | Description | Valeurs possibles | Défaut |
+|-----------|-------------|-------------------|--------|
+| `query_main` | Requête de recherche principale | string | `"l'effet de la lumière sur le comportement des chats"` |
+| `input_csv` | Fichier CSV d'entrée | chemin relatif/absolu | `"data/articles_fictifs.csv"` |
+| `output_csv` | Fichier CSV de sortie | chemin relatif/absolu | `"data/articles_final.csv"` |
 | `threshold_method` | Méthode de seuillage | `"ensemble"`, `"gmm"`, `"kde"`, `"otsu"` | `"ensemble"` |
-| `cluster_method` | Algorithme de clustering | `"dbscan"`, `"hdbscan"` | `"dbscan"` |
+| `cluster_method` | Algorithme de clustering | `"hdbscan"`, `"dbscan"`, `"graph_cc"` | `"hdbscan"` |
+| `fusion_method` | Méthode de fusion BM25/embedding | `"rrf"`, `"linear_z"`, `"rank_pct"` | `"rrf"` |
 | `mmr_topk` | Nombre d'articles finaux | int | `50` |
 | `mmr_lambda` | Balance pertinence/diversité | 0.0-1.0 | `0.7` |
-| `min_abstract_len` | Longueur minimale d'abstract | int | `50` |
-| `dedup_threshold` | Seuil de déduplication | 0.0-1.0 | `0.95` |
+| `min_abstract_len` | Longueur minimale d'abstract | int | `30` |
+| `dedup_threshold` | Seuil de déduplication | 0.0-1.0 | `0.985` |
+| `batch_size` | Taille de batch pour embeddings | int | `16` |
+| `use_gpu` | Utiliser GPU si disponible | bool | `False` |
 
-### Limites de sécurité
+### Paramètres avancés
 
 ```python
-config.max_text_len = 50000        # Limite contre attaques DoS
-config.max_embedding_batch = 256   # Taille de batch pour embeddings
-config.sanitize_html = True        # Nettoyage HTML actif
+config = Config(
+    # Modèle d'embeddings
+    model_id="intfloat/multilingual-e5-small",  # Modèle Sentence-BERT
+    
+    # Pooling du body (longs textes)
+    body_pooling="attn",  # "attn" (attention query-aware) ou "maxmean"
+    body_chunk_size=600,  # Taille des chunks
+    body_chunk_stride=400,  # Pas de fenêtre glissante
+    
+    # Poids pour scoring multi-champs
+    w_title=0.5,    # Poids titre
+    w_abs=0.3,      # Poids abstract
+    w_body=0.2,     # Poids body
+    
+    # Fusion des scores
+    fusion_bm25_weight=0.3,  # Poids BM25
+    fusion_embed_weight=0.7, # Poids embeddings
+    
+    # Clustering HDBSCAN
+    hdbscan_min_cluster_size=5,
+    hdbscan_min_samples=2,
+    hdbscan_cluster_selection_method="eom",  # "eom" ou "leaf"
+    
+    # Sécurité
+    max_text_len=1_000_000,  # Limite contre attaques DoS
+    allowed_langs=("fr", "en"),  # Langues acceptées
+)
+```
+
+### Exemple de configuration personnalisée
+
+```python
+from process_improved import Config, main
+
+config = Config(
+    query_main="machine learning deep learning neural networks",
+    input_csv="data/mes_articles.csv",
+    output_csv="data/resultats.csv",
+    threshold_method="gmm",  # Utiliser GMM au lieu d'ensemble
+    cluster_method="dbscan",  # DBSCAN classique
+    mmr_topk=100,  # Sélectionner 100 articles
+    mmr_lambda=0.6,  # Plus de diversité (lambda plus bas)
+    use_gpu=True,  # Accélérer avec GPU
+    batch_size=32,  # Batch plus grand si GPU disponible
+)
+
+report = main(config)
 ```
 
 ---
@@ -255,20 +340,35 @@ config.sanitize_html = True        # Nettoyage HTML actif
 
 ### Fichiers de sortie
 
-#### `articles_final.csv`
+#### `data/articles_final.csv`
 Articles sélectionnés avec scores et métadonnées :
-- `url`, `title`, `abstract`, `body`
-- `bm25_score`, `semantic_score`, `combined_score`
-- `cluster_id`, `is_cluster_rep`
-- `mmr_score`, `rank`
+- Colonnes originales : `url`, `title`, `abstract`, `body`, `lang_hint`, `author`, `journal`, `published_at`, `doi`, `quality_type`
+- Scores calculés :
+  - `score_title` : Score de similarité du titre
+  - `score_abstract` : Score de similarité de l'abstract
+  - `score_body` : Score de similarité du corps
+  - `score_embed` : Score embedding combiné (pondéré)
+  - `score_bm25` : Score BM25 lexical
+  - `score` : Score final après fusion
+- Métadonnées de traitement :
+  - `cluster_id` : ID du cluster (ou -1 pour bruit)
+  - `rank` : Rang final après sélection MMR
 
 #### `articles_report.json`
 Rapport détaillé incluant :
-- Statistiques globales
-- Métriques de clustering
-- Analyse de sensibilité
-- Diagnostics statistiques
-- Logs d'exécution
+- **Métadonnées** : Version, timestamps, durée d'exécution
+- **Configuration** : Tous les paramètres utilisés
+- **Compteurs** : Nombre d'articles à chaque étape du pipeline
+- **Seuils** : Méthode utilisée, valeur, métadonnées (pour ensemble : poids de chaque méthode)
+- **Clustering** : Métriques (silhouette, Calinski-Harabasz, Davies-Bouldin), nombre de clusters
+- **Sélection** : Quotas par cluster, statistiques, méthode MMR/Facility Location
+- **Statistiques** : Min/max/moyenne/std des scores, diversité cosine
+- **Longueurs de texte** : Statistiques pour titre, abstract, body
+- **Distributions par cluster** : Scores moyens par cluster
+- **Matrice de similarité** : Similarité entre articles sélectionnés (si < 100 articles)
+
+#### `articles_final_embeddings.npy`
+Tableau NumPy (N, D) contenant les embeddings L2-normalisés des articles sélectionnés. Utilisé pour la visualisation 3D.
 
 ### Visualisations disponibles
 
@@ -332,6 +432,38 @@ Les contributions sont les bienvenues ! Pour contribuer :
 ## 📝 License
 
 Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de détails.
+
+---
+
+## 🐛 Dépannage
+
+### Problèmes courants
+
+**Erreur : "HDBSCAN non disponible"**
+```bash
+pip install hdbscan
+```
+
+**Erreur avec torch sur Windows**
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+**Mémoire insuffisante**
+- Réduisez `batch_size` dans la config (par exemple `8` au lieu de `16`)
+- Traitez les données par lots en divisant le CSV d'entrée
+
+**Cache des embeddings corrompu**
+```bash
+# Supprimer le cache (sera régénéré automatiquement)
+rm -rf .cache_embeddings  # Linux/Mac
+rmdir /s .cache_embeddings  # Windows PowerShell
+```
+
+**Visualisations manquantes**
+- Vérifiez que `articles_report.json` et `data/articles_final.csv` existent
+- Exécutez d'abord le pipeline : `python process_improved.py`
+- Puis générez les visualisations : `python generate_visualizations.py`
 
 ---
 

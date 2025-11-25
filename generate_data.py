@@ -24,7 +24,7 @@ Fonctionnalités existantes:
 - Sortie CSV avec: url, title, abstract, body, lang_hint, author, journal, published_at, doi, quality_type
 
 Usage:
-    python data.py --n-pos 200 --n-neg 150 --n-dupes 25 --n-near 40 --n-multilang 30 --n-low-quality 20 --seed 42 --out articles_fictifs.csv
+    python data.py --n-pos 200 --n-neg 150 --n-dupes 25 --n-near 40 --n-multilang 30 --n-low-quality 20 --seed 42 --out data/articles_fictifs.csv
 
 Options:
     --n-pos 200           Articles pertinents (theme chat+lumiere)
@@ -1047,7 +1047,7 @@ def main():
     ap.add_argument("--n-multilang", type=int, default=30, help="Nombre d'articles multilingues")
     ap.add_argument("--n-low-quality", type=int, default=20, help="Nombre d'articles de faible qualité")
     ap.add_argument("--seed", type=int, default=42, help="Graine de random")
-    ap.add_argument("--out", type=str, default="articles_fictifs.csv", help="Chemin du CSV de sortie")
+    ap.add_argument("--out", type=str, default="data/articles_fictifs.csv", help="Chemin du CSV de sortie")
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -1082,10 +1082,10 @@ def main():
     rows: List[Dict[str, str]] = pos + neg + low_quality + multilingual + dupes + near
     random.shuffle(rows)
 
-    # s’assurer des colonnes minimales
+    # s'assurer des colonnes minimales
     base_cols = ["url", "title", "abstract", "body"]
     extra_cols = ["lang_hint", "author", "journal", "published_at", "doi", "quality_type"]
-    all_cols = base_cols + extra_cols
+    all_cols = list(base_cols + extra_cols)
 
     df = pd.DataFrame(rows, columns=all_cols)
 

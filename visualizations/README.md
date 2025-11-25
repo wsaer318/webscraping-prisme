@@ -127,7 +127,7 @@ python generate_visualizations.py
 Ou avec des chemins personnalisés :
 
 ```bash
-python visualize.py --report articles_report.json --csv articles_final.csv --output visualizations
+python visualize.py --report articles_report.json --csv data/articles_final.csv --output visualizations
 ```
 
 ---
