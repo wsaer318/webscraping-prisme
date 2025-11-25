@@ -18,11 +18,12 @@ sentence-transformers>=2.2.0,<4.0.0
 rank-bm25>=0.2.2,<0.3.0
 langdetect>=1.0.9,<2.0.0
 ftfy>=6.1.0,<7.0.0
+beautifulsoup4>=4.12.0,<5.0.0
 
 # === Clustering Avancé ===
 # HDBSCAN: clustering hiérarchique robuste (recommandé)
 # Installation optionnelle mais fortement conseillée
-hdbscan>=0.8.33,<1.0.0
+# hdbscan>=0.8.33,<1.0.0
 
 # === Visualisation ===
 # Pour les graphiques et visualisations (REQUIS pour generate_visualizations.py)
