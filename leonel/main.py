@@ -8,6 +8,8 @@ import urllib.parse
 from bs4 import BeautifulSoup  
 import json
 import os
+import time
+import random
 
 
 url =  'https://scholar.google.com/scholar?q='
@@ -16,7 +18,7 @@ encoded_search = urllib.parse.quote_plus(subjet_search)
 results_per_page = '&num=5'
 full_url = url + encoded_search + results_per_page
 print(full_url)
-user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.60 Safari/537.36'
+user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 headers = {'User-Agent': user_agent}
 
 logs_json = []
@@ -73,11 +75,29 @@ def get_article(article):
     except Exception as e:
         print(f"Unexpected Error trying to download: {e}")
 
+
+
+def fetch_with_retry(req, max_retries=5):
+    for attempt in range(max_retries):
+        try:
+            return urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                wait_time = random.uniform(30, 60) * (attempt + 1)
+                print(f"Erreur 429: Trop de requêtes. Attente de {wait_time:.2f} secondes avant nouvelle tentative ({attempt + 1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                raise e
+    raise Exception("Echec après plusieurs tentatives (Erreur 429)")
+
 def main():
 
         file_web = open("schoolargoogle.html", "w+", encoding='utf-8')
         req = urllib.request.Request(full_url, headers={'User-Agent': user_agent})
-        consult = urllib.request.urlopen(req)
+        
+        # Utilisation de la fonction de retry
+        consult = fetch_with_retry(req)
+        
         consult_bytes = consult.read()
     
         consult_html = consult_bytes.decode('utf-8')
