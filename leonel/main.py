@@ -24,7 +24,7 @@ headers = {'User-Agent': user_agent}
 logs_json = []
 avoid_duplicates = []
 
-file_name = 'results_google_scholar.json'
+file_name = 'leonel/results_google_scholar.json'
 
 def get_abstract(article_url):
     # Function to fetch and parse the article page to extract the abstract
@@ -59,8 +59,8 @@ def get_article(article):
         with urllib.request.urlopen(req) as response:
                     
             pdf_content = response.read()
-            os.makedirs('pdf', exist_ok=True) #Create directory if it doesn't exist
-            full_file_path = os.path.join('pdf', pdf_filename)
+            os.makedirs('leonel/pdf', exist_ok=True) #Create directory if it doesn't exist
+            full_file_path = os.path.join('leonel/pdf', pdf_filename)
             with open(full_file_path, 'wb') as f_pdf:
                        f_pdf.write(pdf_content)
                 
@@ -92,7 +92,7 @@ def fetch_with_retry(req, max_retries=5):
 
 def main():
 
-        file_web = open("schoolargoogle.html", "w+", encoding='utf-8')
+        file_web = open("leonel/schoolargoogle.html", "w+", encoding='utf-8')
         req = urllib.request.Request(full_url, headers={'User-Agent': user_agent})
         
         # Utilisation de la fonction de retry
@@ -108,7 +108,7 @@ def main():
         file_web.write(str(consult_bytes.decode('utf-8')))
         file_web.close()
 
-        html= open("schoolargoogle.html", "r+")
+        html= open("leonel/schoolargoogle.html", "r+")
         soup = BeautifulSoup(consult_html, 'html.parser')
         class_searched = 'gs_r gs_or gs_scl'
         result = soup.find_all('div', class_=class_searched)
