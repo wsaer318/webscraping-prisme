@@ -143,3 +143,8 @@ visualizations/*.jpeg
 *.temp
 .DS_Store
 Thumbs.db
+
+# Leonel scraper outputs
+leonel/Prueba1web.html
+leonel/resultado.html
+leonel/resultados_google_scholar.json
