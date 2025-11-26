@@ -1,74 +1,332 @@
 import streamlit as st
 from src.collection.google_scholar import GoogleScholarScraper
-from src.database import get_db, Article
+from src.collection.arxiv_api import ArxivScraper
+from src.collection.pubmed_api import PubMedScraper
+from src.collection.crossref_api import CrossrefScraper
+from src.database import get_db, Article, SearchSession, init_db
+import pandas as pd
 
-st.set_page_config(page_title="Identification")
+st.set_page_config(page_title="Recherche", layout="wide")
 
-st.title("Identification des Articles")
-st.markdown("Recherchez des articles via Google Scholar et ajoutez-les à votre base de données.")
-st.info("Note : La recherche est configurée pour ne récupérer que les **articles de revue** (Review Articles).")
+st.title("Recherche d'Articles")
 
-# Search Form
-with st.form("search_form"):
-    query = st.text_input("Mots-clés de recherche", "proximal policy optimization ppo")
-    num_results = st.slider("Nombre de résultats à récupérer", 5, 50, 10)
-    submitted = st.form_submit_button("Lancer la recherche")
-
-if submitted:
-    scraper = GoogleScholarScraper()
-    st.info(f"Recherche en cours pour : '{query}' (Filtre: Revues uniquement, {num_results} résultats)...")
-    st.caption(f"Debug Query Sent: {query}") # Debug info for user
-    
-    # Progress bar
-    progress_bar = st.progress(0)
-    
-    # Database session
-    db = next(get_db())
-    
-    try:
-        # Recherche avec filtre "Review articles" activé par défaut (review_only=True)
-        results = scraper.search(query, num_results=num_results, db=db, review_only=True)
-        progress_bar.progress(100)
-        
-        if results:
-            st.success(f"{len(results)} articles trouvés et traités !")
-            
-            # Affichage compact sous forme de tableau
-            import pandas as pd
-            df_results = pd.DataFrame([
-                {
-                    "Titre": r['title'],
-                    "Auteurs": r['authors'],
-                    "Source": r['source'],
-                    "Lien": r['link']
-                }
-                for r in results
-            ])
-            st.dataframe(df_results, use_container_width=True, hide_index=True)
-            
-        else:
-            st.warning("Aucun résultat trouvé ou erreur lors du scraping.")
-            
-    except Exception as e:
-        st.error(f"Une erreur est survenue : {e}")
-    finally:
-        db.close()
-
-# Show current database stats
+init_db()
 db = next(get_db())
-count = db.query(Article).filter(Article.status == "IDENTIFIED").count()
 
-st.divider()
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.metric("Total Articles Identifiés (En attente de Screening)", count)
-with col2:
-    if st.button("Effacer l'historique"):
-        try:
-            # Delete only IDENTIFIED articles (keep those already screened)
-            db.query(Article).filter(Article.status == "IDENTIFIED").delete()
+# Onglets pour séparer les deux modes
+tab1, tab2 = st.tabs(["Mode Automatique (Recommandé)", "Mode Avancé"])
+
+# ==================== ONGLET 1: MODE AUTOMATIQUE ====================
+with tab1:
+    st.info("Mode recommandé : Recherche sur arXiv avec enrichissement automatique des métadonnées")
+    
+    with st.form("auto_search"):
+        query = st.text_input("Mots-clés de recherche", "machine learning")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            num_results = st.slider("Nombre de résultats arXiv", 5, 100, 20)
+        
+        with col2:
+            enrich = st.checkbox("Enrichir avec PubMed/Crossref (DOIs)", value=True, 
+                                help="Cherche les mêmes articles sur PubMed/Crossref pour obtenir les DOIs manquants")
+        
+        submitted = st.form_submit_button("Lancer la recherche automatique")
+    
+    if submitted:
+        if not query:
+            st.error("Veuillez entrer une requête de recherche.")
+        else:
+            progress = st.progress(0)
+            status = st.empty()
+            
+            # Phase 1: arXiv (principal)
+            status.text("Phase 1/3 : Recherche arXiv avec téléchargement PDF...")
+            progress.progress(0.1)
+            
+            arxiv = ArxivScraper()
+            arxiv_results = arxiv.search(query, max_results=num_results)
+            
+            # Créer session arXiv
+            session = SearchSession(
+                query=f"{query} [arXiv]",
+                num_results=len(arxiv_results),
+                successful_downloads=sum(1 for r in arxiv_results if r.get('extraction_status') == 'SUCCESS'),
+                status='ACTIVE'
+            )
+            db.add(session)
             db.commit()
-            st.rerun()
-        except Exception as e:
-            st.error(f"Erreur: {e}")
+            db.refresh(session)
+            
+            progress.progress(0.4)
+            
+            # Sauvegarder arXiv
+            status.text("Phase 2/3 : Sauvegarde des articles arXiv...")
+            for result in arxiv_results:
+                # Déduplication par DOI ou titre
+                is_duplicate = False
+                if result.get('doi'):
+                    exists = db.query(Article).filter(Article.doi == result['doi']).first()
+                    if exists:
+                        is_duplicate = True
+                
+                if not is_duplicate:
+                    import re
+                    normalized_title = re.sub(r'[^\w\s]', '', result['title'].lower())
+                    all_articles = db.query(Article).all()
+                    for art in all_articles:
+                        art_normalized = re.sub(r'[^\w\s]', '', art.title.lower())
+                        if art_normalized == normalized_title:
+                            is_duplicate = True
+                            break
+                
+                if not is_duplicate:
+                    article = Article(
+                        title=result['title'],
+                        authors=result.get('authors'),
+                        year=result.get('year'),
+                        source=result.get('source'),
+                        link=result.get('link'),
+                        doi=result.get('doi'),
+                        abstract=result.get('abstract'),
+                        pdf_path=result.get('pdf_path'),
+                        full_text=result.get('full_text'),
+                        text_extraction_status=result.get('extraction_status', 'NOT_ATTEMPTED'),
+                        extraction_method=result.get('extraction_method'),
+                        status="IDENTIFIED",
+                        search_session_id=session.id
+                    )
+                    db.add(article)
+            
+            db.commit()
+            progress.progress(0.7)
+            
+            # Phase 3: Enrichissement (optionnel)
+            enriched_count = 0
+            if enrich:
+                status.text("Phase 3/3 : Enrichissement PubMed/Crossref (DOIs)...")
+                
+                # Chercher seulement les articles arXiv sans DOI
+                arxiv_no_doi = [r for r in arxiv_results if not r.get('doi')]
+                
+                if arxiv_no_doi:
+                    st.caption(f"Recherche de DOIs pour {len(arxiv_no_doi)} articles...")
+                    
+                    # Crossref (meilleur pour les DOIs)
+                    try:
+                        crossref = CrossrefScraper()
+                        crossref_results = crossref.search(query, max_results=20)
+                        
+                        # Matcher par titre
+                        for arxiv_art in arxiv_no_doi:
+                            arxiv_title_norm = re.sub(r'[^\w\s]', '', arxiv_art['title'].lower())
+                            
+                            for cross_art in crossref_results:
+                                cross_title_norm = re.sub(r'[^\w\s]', '', cross_art['title'].lower())
+                                
+                                if arxiv_title_norm == cross_title_norm and cross_art.get('doi'):
+                                    # Mettre à jour l'article dans la BDD
+                                    db_article = db.query(Article).filter(
+                                        Article.title == arxiv_art['title']
+                                    ).first()
+                                    
+                                    if db_article and not db_article.doi:
+                                        db_article.doi = cross_art['doi']
+                                        enriched_count += 1
+                                        break
+                        
+                        db.commit()
+                    except Exception as e:
+                        st.warning(f"Enrichissement Crossref échoué: {e}")
+            
+            progress.progress(1.0)
+            status.text("Recherche terminée!")
+            
+            # Résumé
+            st.success(f"**{len(arxiv_results)} articles arXiv** trouvés")
+            
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("PDFs téléchargés", 
+                        sum(1 for r in arxiv_results if r.get('pdf_path')))
+            col_b.metric("Texte extrait", 
+                        sum(1 for r in arxiv_results if r.get('extraction_status') == 'SUCCESS'))
+            col_c.metric("DOIs enrichis", enriched_count)
+            
+            st.info("Consultez l'onglet 'Base de données' pour voir les articles.")
+            
+            # --- Lancement Analyse IA en arrière-plan ---
+            st.toast("Lancement de l'analyse IA en arrière-plan...")
+            import threading
+            from src.advanced_sorting import AdvancedRanker
+            
+            def run_background_analysis(article_ids, query):
+                ranker = AdvancedRanker()
+                ranker.process_batch_and_update_db(article_ids, query)
+            
+            # Récupérer les IDs des nouveaux articles
+            new_articles = db.query(Article).filter(Article.search_session_id == session.id).all()
+            new_ids = [a.id for a in new_articles]
+            
+            if new_ids:
+                thread = threading.Thread(target=run_background_analysis, args=(new_ids, query))
+                thread.start()
+                st.toast("Analyse IA démarrée ! Vous pouvez continuer à naviguer.")
+
+# ==================== ONGLET 2: MODE AVANCÉ ====================
+with tab2:
+    st.warning("Mode avancé : Sélection manuelle des sources (PubMed/Crossref ne fournissent pas de texte complet)")
+    
+    with st.form("advanced_search"):
+        query_adv = st.text_input("Mots-clés de recherche", "machine learning", key="adv_query")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            sources = st.multiselect(
+                "Sources à interroger",
+                ["Google Scholar", "arXiv", "PubMed", "Crossref"],
+                default=["arXiv"],
+                help="arXiv: texte complet | PubMed/Crossref: métadonnées seulement"
+            )
+        
+        with col2:
+            num_results_adv = st.slider("Nombre de résultats par source", 5, 100, 20, key="adv_num")
+        
+        submitted_adv = st.form_submit_button("Lancer la recherche avancée")
+    
+    if submitted_adv:
+        if not query_adv or not sources:
+            st.error("Veuillez entrer une requête et sélectionner au moins une source.")
+        else:
+            all_results = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            scrapers = {
+                "Google Scholar": GoogleScholarScraper(),
+                "arXiv": ArxivScraper(),
+                "PubMed": PubMedScraper(),
+                "Crossref": CrossrefScraper()
+            }
+            
+            for idx, source_name in enumerate(sources):
+                status_text.text(f"Interrogation de {source_name}...")
+                progress_bar.progress((idx) / len(sources))
+                
+                try:
+                    scraper = scrapers[source_name]
+                    
+                    if source_name == "Google Scholar":
+                        results = scraper.search(query_adv, num_results=num_results_adv, db=db, review_only=True)
+                    else:
+                        results = scraper.search(query_adv, max_results=num_results_adv)
+                        
+                        session = SearchSession(
+                            query=f"{query_adv} [{source_name}]",
+                            num_results=len(results),
+                            successful_downloads=0,
+                            status='ACTIVE'
+                        )
+                        db.add(session)
+                        db.commit()
+                        db.refresh(session)
+                        
+                        for result in results:
+                            is_duplicate = False
+                            
+                            if result.get('doi'):
+                                exists = db.query(Article).filter(Article.doi == result['doi']).first()
+                                if exists:
+                                    is_duplicate = True
+                            
+                            if not is_duplicate:
+                                import re
+                                normalized_title = re.sub(r'[^\w\s]', '', result['title'].lower())
+                                all_articles = db.query(Article).all()
+                                for art in all_articles:
+                                    art_normalized = re.sub(r'[^\w\s]', '', art.title.lower())
+                                    if art_normalized == normalized_title:
+                                        is_duplicate = True
+                                        break
+                            
+                            if not is_duplicate:
+                                article = Article(
+                                    title=result['title'],
+                                    authors=result.get('authors'),
+                                    year=result.get('year'),
+                                    source=result.get('source'),
+                                    link=result.get('link'),
+                                    doi=result.get('doi'),
+                                    abstract=result.get('abstract'),
+                                    pdf_path=result.get('pdf_path'),
+                                    full_text=result.get('full_text'),
+                                    text_extraction_status=result.get('extraction_status', 'NOT_ATTEMPTED'),
+                                    extraction_method=result.get('extraction_method'),
+                                    status="IDENTIFIED",
+                                    search_session_id=session.id
+                                )
+                                db.add(article)
+                        
+                        db.commit()
+                    
+                    all_results.append({
+                        'source': source_name,
+                        'count': len(results)
+                    })
+                    
+                except Exception as e:
+                    st.warning(f"Erreur avec {source_name}: {e}")
+                    all_results.append({'source': source_name, 'count': 0})
+            
+            progress_bar.progress(1.0)
+            status_text.text("Recherche terminée!")
+            
+            df_summary = pd.DataFrame(all_results)
+            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+            
+            total = sum([r['count'] for r in all_results])
+            total = sum([r['count'] for r in all_results])
+            st.metric("Total d'articles trouvés", total)
+
+            # --- Lancement Analyse IA en arrière-plan ---
+            if total > 0:
+                st.toast("Lancement de l'analyse IA en arrière-plan...")
+                import threading
+                from src.advanced_sorting import AdvancedRanker
+                
+                def run_background_analysis(session_ids, query):
+                    ranker = AdvancedRanker()
+                    db_thread = next(get_db())
+                    all_new_ids = []
+                    for sess_id in session_ids:
+                        arts = db_thread.query(Article).filter(Article.search_session_id == sess_id).all()
+                        all_new_ids.extend([a.id for a in arts])
+                    db_thread.close()
+                    
+                    if all_new_ids:
+                        ranker.process_batch_and_update_db(all_new_ids, query)
+                
+                # Récupérer les IDs des sessions créées
+                # Note: On doit récupérer les IDs des sessions créées dans la boucle
+                # Simplification: On relance une requête pour trouver les sessions actives récentes ou on stocke les IDs
+                # Ici on va faire simple : on lance l'analyse sur tous les articles IDENTIFIED sans score
+                
+                def run_global_analysis_on_missing():
+                    ranker = AdvancedRanker()
+                    db_thread = next(get_db())
+                    # Articles sans score
+                    articles_to_process = db_thread.query(Article).filter(
+                        Article.status == "IDENTIFIED",
+                        Article.relevance_score == None
+                    ).all()
+                    ids = [a.id for a in articles_to_process]
+                    db_thread.close()
+                    
+                    if ids:
+                        ranker.process_batch_and_update_db(ids, query_adv)
+
+                thread = threading.Thread(target=run_global_analysis_on_missing)
+                thread.start()
+                st.toast("Analyse IA démarrée ! Vous pouvez continuer à naviguer.")
+
 db.close()
