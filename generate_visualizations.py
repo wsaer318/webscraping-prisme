@@ -11,6 +11,8 @@ Usage:
 
 import os
 import sys
+from visualize import PipelineVisualizer
+import traceback
 
 def main():
     print("\n" + "="*70)
@@ -40,8 +42,6 @@ def main():
     print("\nChargement du module de visualisation...")
     
     try:
-        from visualize import PipelineVisualizer
-        
         output_dir = "visualizations"
         print(f"\nGeneration des graphiques dans: {output_dir}/\n")
         
@@ -67,7 +67,6 @@ def main():
         
     except Exception as e:
         print(f"\n[ERREUR] Une erreur est survenue: {e}")
-        import traceback
         traceback.print_exc()
         return 1
 

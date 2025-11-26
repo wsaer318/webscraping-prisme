@@ -4,7 +4,10 @@ from src.collection.arxiv_api import ArxivScraper
 from src.collection.pubmed_api import PubMedScraper
 from src.collection.crossref_api import CrossrefScraper
 from src.database import get_db, Article, SearchSession, init_db
+from src.advanced_sorting import AdvancedRanker
+import threading
 import pandas as pd
+import re
 
 st.set_page_config(page_title="Recherche", layout="wide")
 
@@ -14,7 +17,7 @@ init_db()
 db = next(get_db())
 
 # Onglets pour séparer les deux modes
-tab1, tab2 = st.tabs(["Mode Automatique (Recommandé)", "Mode Avancé"])
+tab1, tab2 = st.tabs(["Mode Automatique", "Mode Avancé"])
 
 # ==================== ONGLET 1: MODE AUTOMATIQUE ====================
 with tab1:
@@ -23,13 +26,59 @@ with tab1:
     with st.form("auto_search"):
         query = st.text_input("Mots-clés de recherche", "machine learning")
         
+        # Mode de recherche
+        search_mode = st.radio(
+            "Mode de recherche",
+            ["Nombre fixe", "MAX (Tous les articles disponibles)"],
+            help="Mode MAX : Récupère TOUS les articles disponibles (peut prendre du temps)"
+        )
+        
         col1, col2 = st.columns(2)
         with col1:
-            num_results = st.slider("Nombre de résultats arXiv", 5, 100, 20)
+            if search_mode == "Nombre fixe":
+                num_results = st.slider("Nombre de résultats arXiv", 5, 5000, 20)
+            else:
+                # Mode MAX
+                enable_cap = st.checkbox("Plafond de sécurité", value=True, 
+                                        help="Limite le nombre max d'articles pour éviter les recherches trop longues")
+                if enable_cap:
+                    cap_value = st.select_slider(
+                        "Plafond maximum",
+                        options=[100, 500, 1000, 2000, 5000, 10000],
+                        value=1000
+                    )
+                    num_results = cap_value
+                    st.caption(f"⚠️ Max {cap_value} articles")
+                else:
+                    num_results = 999999  # Valeur "illimitée"
+                    st.warning("⚠️ Aucune limite ! Peut prendre plusieurs heures.")
         
         with col2:
             enrich = st.checkbox("Enrichir avec PubMed/Crossref (DOIs)", value=True, 
                                 help="Cherche les mêmes articles sur PubMed/Crossref pour obtenir les DOIs manquants")
+        
+        # Filtrage Multi-Concepts
+        with st.expander("🔬 Filtrage Multi-Concepts (Avancé)", expanded=False):
+            st.info("Filtre les articles contenant TOUS les concepts (mode AND)")
+            
+            enable_concept_filter = st.checkbox("Activer le filtrage conceptuel", value=False, key="enable_concepts")
+            
+            if enable_concept_filter:
+                col_a, col_b = st.columns([2, 1])
+                
+                with col_a:
+                    st.caption("💡 Concepts auto-extraits de votre requête")
+                    st.code(query if query else "machine learning", language=None)
+                
+                with col_b:
+                    concept_mode = st.radio("Mode", ["AND (tous)", "OR (≥1)"], index=0, key="concept_mode")
+                
+                manual_concepts = st.text_input(
+                    "Concepts personnalisés (optionnel)",
+                    placeholder="concept1, concept2, concept3",
+                    help="Laisser vide pour auto-extraction LLM",
+                    key="manual_concepts"
+                )
         
         submitted = st.form_submit_button("Lancer la recherche automatique")
     
@@ -46,6 +95,36 @@ with tab1:
             
             arxiv = ArxivScraper()
             arxiv_results = arxiv.search(query, max_results=num_results)
+            
+            # FILTRAGE MULTI-CONCEPTS (si activé)
+            if enable_concept_filter:
+                status.text("Phase 1b/3 : Filtrage par concepts...")
+                progress.progress(0.25)
+                
+                from src.concept_extractor import extract_concepts
+                from src.concept_filter import filter_articles_by_concepts
+                
+                # Extraction concepts
+                if manual_concepts:
+                    concepts = [c.strip() for c in manual_concepts.split(',') if c.strip()]
+                    st.info(f"Concepts personnalisés : {concepts}")
+                else:
+                    concepts = extract_concepts(query, max_concepts=5)
+                    st.success(f"Concepts extraits : {concepts}")
+                
+                # Filtrage
+                mode = "AND" if "AND" in concept_mode else "OR"
+                initial_count = len(arxiv_results)
+                
+                arxiv_results = filter_articles_by_concepts(
+                    arxiv_results,
+                    concepts,
+                    mode=mode,
+                    search_in_fulltext=True
+                )
+                
+                filtered_count = len(arxiv_results)
+                st.warning(f"Filtrage {mode}: {filtered_count}/{initial_count} articles retenus")
             
             # Créer session arXiv
             session = SearchSession(
@@ -71,7 +150,6 @@ with tab1:
                         is_duplicate = True
                 
                 if not is_duplicate:
-                    import re
                     normalized_title = re.sub(r'[^\w\s]', '', result['title'].lower())
                     all_articles = db.query(Article).all()
                     for art in all_articles:
@@ -145,19 +223,23 @@ with tab1:
             # Résumé
             st.success(f"**{len(arxiv_results)} articles arXiv** trouvés")
             
-            col_a, col_b, col_c = st.columns(3)
+            # Statistiques détaillées
+            col_a, col_b, col_c, col_d = st.columns(4)
             col_a.metric("PDFs téléchargés", 
                         sum(1 for r in arxiv_results if r.get('pdf_path')))
             col_b.metric("Texte extrait", 
                         sum(1 for r in arxiv_results if r.get('extraction_status') == 'SUCCESS'))
             col_c.metric("DOIs enrichis", enriched_count)
             
+            # Nombre total en BDD
+            total_in_db = db.query(Article).count()
+            col_d.metric("📚 Total en BDD", total_in_db, 
+                        delta=f"+{len(arxiv_results)}" if len(arxiv_results) > 0 else "0")
+            
             st.info("Consultez l'onglet 'Base de données' pour voir les articles.")
             
             # --- Lancement Analyse IA en arrière-plan ---
             st.toast("Lancement de l'analyse IA en arrière-plan...")
-            import threading
-            from src.advanced_sorting import AdvancedRanker
             
             def run_background_analysis(article_ids, query):
                 ranker = AdvancedRanker()
@@ -168,9 +250,17 @@ with tab1:
             new_ids = [a.id for a in new_articles]
             
             if new_ids:
+                # Lancer IA
                 thread = threading.Thread(target=run_background_analysis, args=(new_ids, query))
                 thread.start()
-                st.toast("Analyse IA démarrée ! Vous pouvez continuer à naviguer.")
+                
+                # Lancer récupération PDFs manquants
+                from src.pdf_retriever import auto_retrieve_missing_pdfs
+                pdf_thread = threading.Thread(target=auto_retrieve_missing_pdfs, args=(session.id, 50))
+                pdf_thread.start()
+                
+                st.toast("✓ Analyse IA + Récupération PDFs démarrées en arrière-plan !")
+
 
 # ==================== ONGLET 2: MODE AVANCÉ ====================
 with tab2:
@@ -190,7 +280,7 @@ with tab2:
             )
         
         with col2:
-            num_results_adv = st.slider("Nombre de résultats par source", 5, 100, 20, key="adv_num")
+            num_results_adv = st.slider("Nombre de résultats par source", 5, 5000, 20, key="adv_num")
         
         submitted_adv = st.form_submit_button("Lancer la recherche avancée")
     
@@ -240,7 +330,6 @@ with tab2:
                                     is_duplicate = True
                             
                             if not is_duplicate:
-                                import re
                                 normalized_title = re.sub(r'[^\w\s]', '', result['title'].lower())
                                 all_articles = db.query(Article).all()
                                 for art in all_articles:
@@ -291,8 +380,6 @@ with tab2:
             # --- Lancement Analyse IA en arrière-plan ---
             if total > 0:
                 st.toast("Lancement de l'analyse IA en arrière-plan...")
-                import threading
-                from src.advanced_sorting import AdvancedRanker
                 
                 def run_background_analysis(session_ids, query):
                     ranker = AdvancedRanker()
@@ -327,6 +414,12 @@ with tab2:
 
                 thread = threading.Thread(target=run_global_analysis_on_missing)
                 thread.start()
-                st.toast("Analyse IA démarrée ! Vous pouvez continuer à naviguer.")
+                
+                # Lancer récupération PDFs manquants (pour toutes les sessions)
+                from src.pdf_retriever import auto_retrieve_missing_pdfs
+                pdf_thread = threading.Thread(target=auto_retrieve_missing_pdfs, args=(None, 100))
+                pdf_thread.start()
+                
+                st.toast("✓ Analyse IA + Récupération PDFs démarrées en arrière-plan !")
 
 db.close()

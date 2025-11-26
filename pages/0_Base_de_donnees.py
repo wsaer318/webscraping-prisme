@@ -3,6 +3,7 @@ from src.database import get_db, Article, SearchSession, delete_article_with_cle
 import pandas as pd
 from datetime import datetime
 import os
+import json
 
 st.set_page_config(page_title="Base de données", layout="wide")
 
@@ -191,7 +192,6 @@ with tab2:
         
         with col_export2:
             # Export JSON avec le texte complet
-            import json
             articles_json = []
             for a in articles:
                 articles_json.append({

@@ -1,7 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import os
-from src.database import get_db, Article, SearchSession, ArticleHistory
+import base64
+import json
+from src.database import get_db, Article, SearchSession, ArticleHistory, ExclusionCriteria
+from src.advanced_sorting import AdvancedRanker
+from src.llm_generator import generate_exclusion_criteria
+import threading
 
 st.set_page_config(page_title="Screening", layout="wide")
 
@@ -69,9 +75,8 @@ else:
     
     if missing_scores_count > 0:
         st.sidebar.warning(f"⚠️ {missing_scores_count} articles en cours d'analyse ou sans score.")
-        if st.sidebar.button("Forcer l'analyse IA (Arrière-plan)"):
-            import threading
-            from src.advanced_sorting import AdvancedRanker
+        if st.sidebar.button("Forcer l'analyse IA (Arrière-plan)", key="btn_force_missing"):
+
             def run_force_analysis(ids, q):
                 ranker = AdvancedRanker()
                 ranker.process_batch_and_update_db(ids, q)
@@ -82,6 +87,21 @@ else:
             st.toast("Analyse forcée lancée en arrière-plan !")
             st.rerun()
     
+    # Bouton permanent pour recalculer TOUS les articles avec les nouveaux critères
+    st.sidebar.divider()
+    if st.sidebar.button("🔄 Recalculer TOUS les scores avec critères actuels", key="btn_reanalyze_all", help="Relance l'analyse IA pour tous les articles avec les critères d'exclusion actuels"):
+        
+        def run_reanalysis(ids, q):
+            ranker = AdvancedRanker()
+            ranker.process_batch_and_update_db(ids, q)
+        
+        all_ids = [a.id for a in articles]
+        thread = threading.Thread(target=run_reanalysis, args=(all_ids, session_query))
+        thread.start()
+        st.sidebar.success(f"✓ Analyse relancée pour {len(all_ids)} articles !")
+        st.toast(f"Analyse en cours pour {len(all_ids)} articles...")
+        st.rerun()
+    
     # Récupérer les scores pour le tri
     # On utilise une valeur par défaut (-1) pour les articles sans score pour qu'ils soient à la fin (ou au début ?)
     # Disons au début pour qu'on les voit arriver.
@@ -90,6 +110,67 @@ else:
     # Trier par score
     articles.sort(key=lambda a: article_scores.get(a.id, -1.0), reverse=True)
     
+    # --- CONFIGURATION CRITÈRES EXCLUSION ---
+    with st.sidebar.expander("Critères d'Exclusion (IA)", expanded=False):
+        
+        # Bouton pour générer les critères basés sur la requête
+        if st.button(f"🤖 Générer critères IA pour '{session_query}'", key="btn_generate_criteria", help="Utilise Hugging Face pour générer des critères contextuels"):
+            with st.spinner("Génération en cours via Hugging Face..."):
+                try:
+                    
+                    # Reset des critères
+                    db.query(ExclusionCriteria).delete()
+                    
+                    # Génération via LLM
+                    criteria_generated = generate_exclusion_criteria(session_query)
+                    
+                    for crit in criteria_generated:
+                        db.add(ExclusionCriteria(
+                            label=crit["label"], 
+                            description=crit["description"], 
+                            active=1
+                        ))
+                    
+                    db.commit()
+                    st.success(f"✓ {len(criteria_generated)} critères générés pour : {session_query}")
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Erreur lors de la génération : {e}")
+                    db.rollback()
+
+        # Afficher/Modifier les critères
+        criteria = db.query(ExclusionCriteria).all()
+        
+        if not criteria:
+            st.warning("⚠️ Aucun critère défini. Cliquez sur 'Générer' ci-dessus.")
+        else:
+            st.info(f"📋 {len(criteria)} critère(s) actif(s)")
+        
+        for crit in criteria:
+            col_c1, col_c2 = st.columns([4, 1])
+            with col_c1:
+                st.markdown(f"**{crit.label}**")
+                st.caption(crit.description)
+            with col_c2:
+                # Toggle actif/inactif
+                is_active = st.checkbox("Actif", value=(crit.active == 1), key=f"crit_{crit.id}")
+                if is_active != (crit.active == 1):
+                    crit.active = 1 if is_active else 0
+                    db.commit()
+                    st.rerun()
+        
+        # Ajouter un nouveau critère
+        if st.button("Ajouter un critère"):
+            new_crit = ExclusionCriteria(
+                label="Nouveau Critère", 
+                description="Description...",
+                active=1
+            )
+            db.add(new_crit)
+            db.commit()
+            st.rerun()
+
     # --- SCREENING ASSISTÉ (SUGGESTIONS) ---
     st.sidebar.header("Screening Assisté (IA)")
     
@@ -98,8 +179,11 @@ else:
     
     if valid_scores:
         # Suggestion de seuil simple (Médiane des scores positifs)
-        import numpy as np
-        suggested_threshold = float(np.median(valid_scores)) if valid_scores else 0.5
+        raw_median = float(np.median(valid_scores)) if valid_scores else 0.5
+        # Arrondir au pas de 0.05 le plus proche pour éviter le warning Streamlit
+        suggested_threshold = round(raw_median / 0.05) * 0.05
+        # S'assurer qu'on reste entre 0 et 1
+        suggested_threshold = max(0.0, min(1.0, suggested_threshold))
         
         # Initialiser le seuil utilisateur s'il n'existe pas encore
         if "user_threshold" not in st.session_state:
@@ -169,15 +253,27 @@ else:
                     st.warning("Pas d'abstract disponible.")
             
             with tab_fulltext:
-                if current_article.full_text:
-                    st.markdown(f"### Texte Complet ({len(current_article.full_text)} caractères)")
-                    st.text_area("Contenu extrait", current_article.full_text, height=600)
+                # Priorité au PDF
+                if current_article.pdf_path and os.path.exists(current_article.pdf_path):
+                    # Embed PDF
+                    with open(current_article.pdf_path, "rb") as f:
+                        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+                    
+                    # Embed PDF (Utilisation de <embed> plus robuste que <iframe>)
+                    pdf_display = f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf">'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                    
+                    st.caption("Si le PDF est blanc ou ne charge pas, utilisez le bouton 'Ouvrir/Télécharger' dans l'onglet 'Fichier'.")
+                    
+                    # Texte brut en option (pour vérifier ce que l'IA a lu)
+                    with st.expander("Voir le texte brut (lu par l'IA)"):
+                         st.text_area("Contenu", current_article.full_text if current_article.full_text else "Pas de texte extrait.", height=300)
+                
+                elif current_article.full_text:
+                     st.warning("PDF non disponible. Affichage du texte extrait.")
+                     st.text_area("Contenu extrait", current_article.full_text, height=600)
                 else:
-                    st.warning("Texte complet non extrait.")
-                    if current_article.pdf_path:
-                        st.info("PDF disponible mais texte non extrait. Voir onglet 'Fichier'.")
-                    else:
-                        st.error("Pas de PDF téléchargé pour cet article.")
+                     st.error("Ni PDF ni texte extrait disponible.")
             
             with tab_file:
                 st.markdown("### Accès au document")
@@ -211,6 +307,10 @@ else:
                     suggestion = "EXCLURE"
                     color = "red"
                     reason_suggestion = f"Score faible ({score:.2f} < {threshold})"
+                    
+                    # Afficher la raison spécifique si détectée par le Cross-Encoder
+                    if current_article.suggested_reason:
+                        reason_suggestion += f" | Raison probable : **{current_article.suggested_reason}**"
                 
                 st.markdown(f"**Suggestion IA** : :{color}[{suggestion}] ({reason_suggestion})")
             else:
@@ -226,17 +326,43 @@ else:
             
             with col_act2:
                 if st.button("INCERTAIN", use_container_width=True):
-                    # On passe juste au suivant sans changer le statut (ou statut spécifique)
-                    # Pour l'instant, on ne fait rien, l'utilisateur change manuellement
                     st.toast("Article marqué comme incertain (non modifié)")
             
             with col_act3:
+                # Récupérer les scores IA si disponibles (utilisé en arrière-plan)
+                best_criterion_by_ia = None
+                try:
+                    if current_article.ia_metadata:
+                        metadata = json.loads(current_article.ia_metadata)
+                        criteria_scores = metadata.get("criteria_scores", {})
+                        if criteria_scores:
+                            # Trouver le meilleur critère silencieusement
+                            best_criterion_by_ia = max(criteria_scores.items(), key=lambda x: x[1])[0]
+                except:
+                    pass
+                
+                # Options de rejet simples
+                active_criteria_labels = [c.label for c in criteria if c.active]
+                system_options = ["Pas d'abstract", "Autre"]
+                rejection_options = [""] + active_criteria_labels + [opt for opt in system_options if opt not in active_criteria_labels]
+                
+                # Pré-sélection intelligente : IA > suggested_reason > vide
+                default_index = 0
+                if best_criterion_by_ia and best_criterion_by_ia in rejection_options:
+                    default_index = rejection_options.index(best_criterion_by_ia)
+                elif current_article.suggested_reason and current_article.suggested_reason in rejection_options:
+                    default_index = rejection_options.index(current_article.suggested_reason)
+                
                 reason = st.selectbox("Raison du rejet", 
-                                     ["Hors sujet", "Mauvaise population", "Mauvaise intervention", 
-                                      "Mauvais type d'étude", "Langue incorrecte", "Pas de données", "Autre"],
-                                     key=f"reason_{current_article.id}")
+                                     rejection_options,
+                                     index=default_index,
+                                     key=f"reason_{current_article.id}",
+                                     help="L'IA pré-sélectionne le critère le plus probable")
                 
                 if st.button("EXCLURE", use_container_width=True, type="secondary"):
-                    save_decision(current_article.id, "EXCLUDED_SCREENING", reason)
+                    if not reason:
+                        st.error("Veuillez sélectionner une raison.")
+                    else:
+                        save_decision(current_article.id, "EXCLUDED_SCREENING", reason)
 
     db.close()
