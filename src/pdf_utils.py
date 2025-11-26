@@ -164,25 +164,6 @@ def _is_extraction_valid(text: str) -> bool:
     return True
 
 
-def is_pdf_readable(pdf_path: str) -> bool:
-    """
-    Vérifie si un PDF peut être ouvert et lu.
-    
-    Args:
-        pdf_path: Chemin vers le fichier PDF
-        
-    Returns:
-        True si le PDF est lisible, False sinon
-    """
-    try:
-        doc = fitz.open(pdf_path)
-        page_count = len(doc)
-        doc.close()
-        return page_count > 0
-    except Exception:
-        return False
-
-
 def get_pdf_metadata(pdf_path: str) -> dict:
     """
     Extrait les métadonnées d'un PDF.
