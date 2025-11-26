@@ -148,3 +148,29 @@ Thumbs.db
 leonel/Prueba1web.html
 leonel/resultado.html
 leonel/resultados_google_scholar.json
+leonel/schoolargoogle.html
+leonel/pdf/
+
+# ========================================
+# PRISMA PROJECT - Résultats de recherche
+# ========================================
+
+# Base de données SQLite (contient les articles)
+data/prisma.db
+data/prisma.db-journal
+
+# PDFs téléchargés (peuvent être volumineux et sensibles)
+data/0_raw/pdfs/
+data/*/pdfs/
+
+# Fichiers de debug du scraping
+debug_*.html
+debug_*.json
+
+# Exports CSV/JSON
+*_export_*.csv
+*_export_*.json
+prisma_export_*
+
+# Logs de scraping
+scraping_*.log

@@ -1,9 +1,9 @@
 import streamlit as st
 from src.database import get_db, Article
 
-st.set_page_config(page_title="Eligibilité", page_icon="📥")
+st.set_page_config(page_title="Eligibilité")
 
-st.title("📥 Éligibilité (Texte Complet)")
+st.title("Éligibilité (Texte Complet)")
 st.markdown("Validez les articles retenus après screening. Lisez le texte complet et décidez de l'inclusion finale.")
 
 db = next(get_db())
@@ -33,7 +33,7 @@ else:
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("✅ Inclure dans l'étude", use_container_width=True):
+        if st.button("Inclure dans l'étude", use_container_width=True):
             article.status = "INCLUDED"
             db.commit()
             st.success("Article inclus !")
@@ -48,7 +48,7 @@ else:
             "Doublon non détecté",
             "Autre"
         ])
-        if st.button("❌ Exclure", use_container_width=True):
+        if st.button("Exclure", use_container_width=True):
             article.status = "EXCLUDED_ELIGIBILITY"
             article.exclusion_reason = reason
             db.commit()

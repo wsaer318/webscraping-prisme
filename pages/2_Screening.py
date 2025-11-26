@@ -1,9 +1,9 @@
 import streamlit as st
 from src.database import get_db, Article
 
-st.set_page_config(page_title="Screening", page_icon="📝")
+st.set_page_config(page_title="Screening")
 
-st.title("📝 Screening (Titre & Abstract)")
+st.title("Screening (Titre & Abstract)")
 st.markdown("Filtrez les articles identifiés. Décidez de les inclure ou de les exclure sur base du titre et du résumé.")
 
 db = next(get_db())
@@ -28,13 +28,13 @@ else:
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("✅ Inclure (Passer à l'éligibilité)", use_container_width=True):
+        if st.button("Inclure (Passer à l'éligibilité)", use_container_width=True):
             article.status = "SCREENED_IN"
             db.commit()
             st.rerun()
             
     with col2:
-        if st.button("❌ Exclure", use_container_width=True):
+        if st.button("Exclure", use_container_width=True):
             article.status = "EXCLUDED_SCREENING"
             article.exclusion_reason = "Screening Titre/Abstract"
             db.commit()
