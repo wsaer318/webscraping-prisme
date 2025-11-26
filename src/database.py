@@ -50,14 +50,24 @@ class Article(Base):
     
     # AI Analysis
     relevance_score = Column(Float, nullable=True)
+    suggested_reason = Column(String, nullable=True) # Raison suggérée par le Cross-Encoder
     ia_metadata = Column(Text, nullable=True) # JSON string pour détails (méthode, confiance, chunks)
     
     # PRISMA Status
     status = Column(String, default="IDENTIFIED", index=True)
     
-    # Decisions
+    # Screening Decisions
     exclusion_reason = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
+    
+    # Eligibility Phase (Phase 3)
+    eligibility_notes = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewer = Column(String, nullable=True)
+    
+    # Additional PDF metadata
+    pdf_url = Column(String, nullable=True)
+    arxiv_id = Column(String, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -91,6 +101,31 @@ class ArticleHistory(Base):
     
     # Relation
     article = relationship("Article", back_populates="history")
+
+
+class ExclusionCriteria(Base):
+    """Critères d'exclusion pour l'IA (Cross-Encoder) - Phase Screening"""
+    __tablename__ = "exclusion_criteria"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String, nullable=False) # Ex: "Animal Study"
+    description = Column(String, nullable=False) # Ex: "Study performed on animals..."
+    active = Column(Integer, default=1) # 1=Active, 0=Inactive (Integer for SQLite boolean)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EligibilityCriteria(Base):
+    """Critères d'éligibilité pour Phase 3 - Revue texte complet"""
+    __tablename__ = "eligibility_criteria"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    type = Column(String, nullable=False) # "INCLUSION" ou "EXCLUSION"
+    active = Column(Integer, default=1)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 # Database Setup

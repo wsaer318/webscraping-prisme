@@ -9,6 +9,9 @@ import gzip
 from io import BytesIO
 from sqlalchemy.orm import Session
 from src.database import Article, get_db
+import re
+from src.database import SearchSession
+from src.pdf_utils import extract_text_from_pdf
 
 class GoogleScholarScraper:
     def __init__(self):
@@ -138,7 +141,6 @@ class GoogleScholarScraper:
         # Créer une session de recherche
         search_session = None
         if db:
-            from src.database import SearchSession
             search_session = SearchSession(
                 query=query,
                 num_results=num_results,
@@ -222,7 +224,6 @@ class GoogleScholarScraper:
                 
                 if authors_tag:
                     auth_text = authors_tag.text
-                    import re
                     year_matches = re.findall(r'\b(?:19|20)\d{2}\b', auth_text)
                     if year_matches:
                         year = int(year_matches[-1])
@@ -280,7 +281,6 @@ class GoogleScholarScraper:
         
         # === PHASE 2 : EXTRACTION ===
         print(f"\n📄 Phase 2: Extraction du texte des PDFs téléchargés...")
-        from src.pdf_utils import extract_text_from_pdf
         
         for article_info in articles_to_save:
             article_data = article_info['data']
@@ -382,9 +382,6 @@ class GoogleScholarScraper:
                 if authors_tag:
                     auth_text = authors_tag.text
                     # Essayer de trouver une année (4 chiffres)
-                    import re
-                    # Correction: Utiliser (?:...) pour ne pas capturer le groupe 19/20 séparément, 
-                    # ou simplement chercher \d{4} avec validation de plage
                     year_matches = re.findall(r'\b(?:19|20)\d{2}\b', auth_text)
                     if year_matches:
                         year = int(year_matches[-1]) # Prendre la dernière année trouvée

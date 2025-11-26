@@ -3,11 +3,13 @@ Scraper pour arXiv API
 Couvre: Informatique, Physique, Mathématiques, etc.
 Limite: Illimitée (politesse: 1 req/3s)
 """
+import os
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 import time
 from typing import List, Dict
+from src.pdf_utils import extract_text_from_pdf
 
 class ArxivScraper:
     def __init__(self):
@@ -16,26 +18,30 @@ class ArxivScraper:
     
     def search(self, query: str, max_results: int = 100) -> List[Dict]:
         """
-        Recherche sur arXiv
+        Recherche sur arXiv avec remplacement automatique des articles sans PDF
         
         Args:
             query: Requête de recherche
-            max_results: Nombre maximum de résultats
+            max_results: Nombre d'articles **avec PDF** souhaités
             
         Returns:
-            Liste de dictionnaires contenant les métadonnées
+            Liste de max_results dictionnaires avec PDFs téléchargés
         """
-        results = []
+        results_with_pdf = []
         start = 0
+        max_attempts = max_results * 3  # Limite anti-boucle infinie
+        attempts = 0
         
-        while start < max_results:
-            batch_size = min(self.results_per_page, max_results - start)
+        print(f"[arXiv] Objectif : {max_results} articles avec PDF")
+        
+        while len(results_with_pdf) < max_results and attempts < max_attempts:
+            batch_size = min(self.results_per_page, max_results * 2 - start)
             
             # Encoder la query
             encoded_query = urllib.parse.quote_plus(query)
             url = f"{self.base_url}?search_query=all:{encoded_query}&start={start}&max_results={batch_size}"
             
-            print(f"[arXiv] Fetching {start}-{start+batch_size}...")
+            print(f"[arXiv] Fetching {start}-{start+batch_size}... ({len(results_with_pdf)}/{max_results} OK)")
             
             try:
                 req = urllib.request.Request(url)
@@ -51,9 +57,16 @@ class ArxivScraper:
                 entries = root.findall('atom:entry', ns)
                 
                 if not entries:
+                    print(f"[arXiv] Plus de résultats disponibles")
                     break  # Plus de résultats
                 
+                # Traiter chaque article
                 for entry in entries:
+                    if len(results_with_pdf) >= max_results:
+                        break  # Objectif atteint
+                    
+                    attempts += 1
+                    
                     title_elem = entry.find('atom:title', ns)
                     title = title_elem.text.strip().replace('\n', ' ') if title_elem is not None else "N/A"
                     
@@ -71,6 +84,11 @@ class ArxivScraper:
                     link_elem = entry.find('atom:id', ns)
                     link = link_elem.text if link_elem is not None else None
                     
+                    # Extraire ArXiv ID
+                    arxiv_id = None
+                    if link:
+                        arxiv_id = link.split('/abs/')[-1]
+                    
                     # Trouver le lien PDF
                     pdf_link = None
                     for link_tag in entry.findall('atom:link', ns):
@@ -87,54 +105,55 @@ class ArxivScraper:
                     if doi_elem is not None:
                         doi = doi_elem.text
                     
-                    results.append({
-                        'title': title,
-                        'authors': authors,
-                        'year': year,
-                        'link': link,
-                        'pdf_link': pdf_link,
-                        'abstract': abstract,
-                        'source': 'arXiv',
-                        'doi': doi
-                    })
+                    # Tentative de téléchargement PDF
+                    if pdf_link:
+                        try:
+                            pdf_path, full_text, status, method = self._download_and_extract_pdf(
+                                pdf_link,
+                                title
+                            )
+                            
+                            if status == "SUCCESS":
+                                # Article VALIDE avec PDF
+                                results_with_pdf.append({
+                                    'title': title,
+                                    'authors': authors,
+                                    'year': year,
+                                    'link': link,
+                                    'pdf_link': pdf_link,
+                                    'abstract': abstract,
+                                    'source': 'arXiv',
+                                    'doi': doi,
+                                    'arxiv_id': arxiv_id,
+                                    'pdf_path': pdf_path,
+                                    'full_text': full_text,
+                                    'extraction_status': status,
+                                    'extraction_method': method
+                                })
+                                print(f"  [{len(results_with_pdf)}/{max_results}] ✓ {title[:50]}...")
+                            else:
+                                print(f"  [SKIP] {status}: {title[:50]}...")
+                        except Exception as e:
+                            print(f"  [SKIP] FAILED: {e}")
+                    else:
+                        print(f"  [SKIP] No PDF link: {title[:50]}...")
                 
                 start += batch_size
                 
                 # Politesse: attendre 3 secondes entre les requêtes
-                if start < max_results:
+                if len(results_with_pdf) < max_results:
                     time.sleep(3)
                     
             except Exception as e:
                 print(f"[arXiv] Error: {e}")
                 break
         
-        print(f"[arXiv] Total retrieved: {len(results)} articles")
+        print(f"[arXiv] Terminé : {len(results_with_pdf)}/{max_results} articles avec PDF")
         
-        # Phase 2: Télécharger et extraire les PDFs
-        print(f"[arXiv] Starting PDF download and extraction...")
-        for idx, article in enumerate(results):
-            if article.get('pdf_link'):
-                try:
-                    pdf_path, full_text, status, method = self._download_and_extract_pdf(
-                        article['pdf_link'],
-                        article['title']
-                    )
-                    article['pdf_path'] = pdf_path
-                    article['full_text'] = full_text
-                    article['extraction_status'] = status
-                    article['extraction_method'] = method
-                    print(f"  [{idx+1}/{len(results)}] {status}: {article['title'][:50]}...")
-                except Exception as e:
-                    print(f"  [{idx+1}/{len(results)}] FAILED: {e}")
-                    article['extraction_status'] = "FAILED"
-        
-        return results
+        return results_with_pdf
     
     def _download_and_extract_pdf(self, pdf_url, title):
         """Télécharge et extrait le texte d'un PDF arXiv"""
-        import urllib.request
-        import os
-        from src.pdf_utils import extract_text_from_pdf
         
         # Nettoyer le titre pour le nom de fichier
         safe_title = "".join([c if c.isalnum() or c in (' ', '_') else '_' for c in title])[:100]

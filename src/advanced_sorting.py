@@ -1,32 +1,40 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.mixture import GaussianMixture
-from scipy.stats import rankdata
 import torch
 import os
-
 import json
-from src.database import get_db, Article
+from src.database import get_db, Article, ExclusionCriteria
 
 class AdvancedRanker:
-    def __init__(self, model_name="paraphrase-MiniLM-L3-v2"):
+    def __init__(self, model_name="paraphrase-MiniLM-L3-v2", cross_encoder_name="cross-encoder/ms-marco-TinyBERT-L-2-v2"):
         """
         Initialise le ranker avancé.
         Modèle léger par défaut : paraphrase-MiniLM-L3-v2 (rapide et efficace).
+        Cross-Encoder : ms-marco-TinyBERT-L-2-v2 (très léger et performant pour la vérification).
         """
         self.model_name = model_name
+        self.cross_encoder_name = cross_encoder_name
         self._model = None
+        self._cross_encoder = None
     
     @property
     def model(self):
         if self._model is None:
-            # Chargement du modèle (peut prendre un peu de temps)
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             print(f"Loading SentenceTransformer model: {self.model_name} on {device}...")
             self._model = SentenceTransformer(self.model_name, device=device)
         return self._model
+
+    @property
+    def cross_encoder(self):
+        if self._cross_encoder is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            print(f"Loading CrossEncoder model: {self.cross_encoder_name} on {device}...")
+            self._cross_encoder = CrossEncoder(self.cross_encoder_name, device=device)
+        return self._cross_encoder
 
     def preprocess_text(self, text):
         if not text:
@@ -83,44 +91,56 @@ class AdvancedRanker:
                 continue
                 
             # 3. Encodage des chunks
-            # Note: Pour beaucoup d'articles, cela peut être lent. 
-            # On pourrait batcher, mais ici on fait simple article par article.
             chunk_embeddings = self.model.encode(chunks, convert_to_tensor=True)
             chunk_vecs = chunk_embeddings.cpu().numpy()
             
             # 4. Similarité Sémantique (Max Pooling)
-            # On cherche si AU MOINS UN passage est pertinent
             sims = cosine_similarity(query_vec, chunk_vecs)[0]
             semantic_score = float(np.max(sims))
             
-            # 5. Score BM25 (Sur Titre + Abstract uniquement pour éviter le bruit du full text sur les mots clés)
-            # Ou sur le full text ? BM25 sur full text peut être bruyant. 
-            # Gardons BM25 sur le résumé pour la précision "Keyword", et Embeddings sur Full Text pour le "Fond".
-            bm25_text = f"{title} {abstract}"
-            tokenized_doc = bm25_text.split()
-            tokenized_query = self.preprocess_text(query).split()
-            
-            # Petit hack BM25 local pour éviter de re-créer le corpus entier à chaque fois
-            # Pour être rigoureux il faudrait le corpus entier, mais ici on fait un score "local" ou on garde l'approche globale ?
-            # L'approche globale est mieux pour IDF.
-            # Revenons à une approche hybride simplifiée : 
-            # On ne calcule pas BM25 ici article par article, c'est inefficace.
-            # On va juste utiliser le score sémantique pur boosté par le chunking, 
-            # car c'est ce que l'utilisateur veut ("méthodes avancées").
-            # Si on veut garder BM25, il faut le faire sur tout le corpus avant la boucle.
-            
             final_scores[art['id']] = semantic_score
 
-        # Réintégration BM25 Global (Optionnel mais recommandé)
-        # Pour l'instant, on renvoie le score sémantique pur du meilleur chunk
-        # C'est souvent suffisant et plus "Intelligent" que BM25.
-        
         return final_scores
+
+    def check_exclusion_criteria(self, article_text: str, criteria: list) -> dict:
+        """
+        Vérifie si l'article correspond à l'un des critères d'exclusion.
+        Retourne un dict avec :
+        - 'best_reason': le label du meilleur critère (ou None)
+        - 'all_scores': dict {label: score} pour tous les critères
+        """
+        if not criteria or not article_text:
+            return {"best_reason": None, "all_scores": {}}
+            
+        # On prépare les paires (Texte, Description Critère)
+        # On utilise le début du texte (Titre + Abstract) pour la rapidité
+        # Le Cross-Encoder est lent sur les longs textes, on tronque à 200 mots
+        truncated_text = " ".join(article_text.split()[:200])
+        
+        pairs = [[truncated_text, c.description] for c in criteria]
+        
+        # Prédiction (retourne des scores logits ou probabilités selon le modèle)
+        scores = self.cross_encoder.predict(pairs)
+        
+        # Créer un dict avec tous les scores
+        all_scores = {criteria[i].label: float(scores[i]) for i in range(len(criteria))}
+        
+        # Trouver le meilleur score
+        best_idx = np.argmax(scores)
+        best_score = scores[best_idx]
+        
+        # Seuil empirique pour TinyBERT (souvent autour de 0 ou 1 en logit, ou > 0.5 en proba)
+        # UPDATE: Après calibration, les scores sont des logits négatifs (ex: -9 vs -11).
+        # On fixe le seuil à -11.0 pour être permissif et suggérer des raisons même avec confiance modérée.
+        best_reason = None
+        if best_score > -11.0: 
+            best_reason = criteria[best_idx].label
+        
+        return {"best_reason": best_reason, "all_scores": all_scores}
 
     def suggest_threshold(self, scores: list) -> dict:
         """
         Utilise des statistiques robustes (GMM) pour suggérer un seuil de coupure.
-        Inspiré de process_improved.py (gmm_bayes_cut_robust).
         """
         if not scores or len(scores) < 5:
             return {"threshold": 0.5, "method": "default (not enough data)"}
@@ -133,12 +153,7 @@ class AdvancedRanker:
             gmm.fit(scores_array)
             
             means = gmm.means_.flatten()
-            # On suppose que le cluster avec la moyenne la plus haute est "Pertinent"
-            # Le seuil peut être approximé par la moyenne des deux moyennes
             threshold = np.mean(means)
-            
-            # Raffinement : intersection des gaussiennes (simplifié ici)
-            # On s'assure que le seuil est entre min et max
             threshold = np.clip(threshold, min(scores), max(scores))
             
             return {
@@ -149,6 +164,40 @@ class AdvancedRanker:
         except Exception as e:
             print(f"GMM failed: {e}")
             return {"threshold": np.median(scores), "method": "Median (Fallback)"}
+
+    def is_valid_abstract(self, text: str) -> bool:
+        """
+        Vérifie si le texte ressemble à un vrai abstract.
+        Retourne False si c'est une Préface, une Table des matières, ou du texte brut mal extrait.
+        """
+        if not text:
+            return False
+            
+        text_clean = text.strip()
+        if len(text_clean) < 50: # Augmenté à 50 chars
+            return False
+            
+        text_lower = text_clean.lower()
+        
+        # Heuristiques de rejet (Faux abstracts)
+        invalid_starts = ["preface", "table of contents", "contents", "chapter 1", "acknowledgments"]
+        
+        # Vérification élargie (pas seulement startswith, car parfois il y a du bruit au début)
+        # On regarde dans les 200 premiers caractères
+        start_text = text_lower[:200]
+        for term in invalid_starts:
+            if term in start_text:
+                return False
+        
+        # Détection de livres (Recherche dans tout le texte car "This book" peut être à la fin de l'intro)
+        if "this book" in text_lower or "in this book" in text_lower:
+            return False
+        
+        # Détection de contenu brut (Légendes de figures, artefacts)
+        if "figure 1" in text_lower or "fig. 1" in text_lower:
+            return False
+            
+        return True
 
     def process_batch_and_update_db(self, article_ids: list, query: str):
         """
@@ -161,6 +210,9 @@ class AdvancedRanker:
             if not articles:
                 return
             
+            # Récupérer les critères d'exclusion actifs
+            criteria = db.query(ExclusionCriteria).filter(ExclusionCriteria.active == 1).all()
+            
             # Préparation des données
             articles_data = [
                 {
@@ -172,19 +224,42 @@ class AdvancedRanker:
                 for a in articles
             ]
             
-            # Calcul des scores
+            # Calcul des scores (Bi-Encoder)
             scores_dict = self.compute_scores(articles_data, query)
-            
-            # Calcul du seuil global pour ce lot (ou globalement ?)
-            # Pour l'instant on stocke juste le score brut.
-            # Le seuil sera recalculé dynamiquement dans l'UI sur l'ensemble des articles.
             
             # Mise à jour DB
             for article in articles:
+                # --- RÈGLE DURE : Validation Abstract ---
+                if not self.is_valid_abstract(article.abstract):
+                    article.relevance_score = 0.0
+                    article.suggested_reason = "Pas d'abstract" 
+                    article.ia_metadata = json.dumps({"model": "RuleBased", "reason": "Invalid/Missing Abstract"})
+                    continue
+
                 if article.id in scores_dict:
-                    article.relevance_score = scores_dict[article.id]
-                    # On pourrait stocker plus de détails dans ia_metadata si besoin
-                    article.ia_metadata = json.dumps({"model": self.model_name, "processed_at": str(np.datetime64('now'))})
+                    score = scores_dict[article.id]
+                    article.relevance_score = score
+                    
+                    # Si le score est faible (< 0.4 par exemple), on cherche une raison
+                    if score < 0.4 and criteria:
+                        text_for_check = f"{article.title} {article.abstract}"
+                        criteria_result = self.check_exclusion_criteria(text_for_check, criteria)
+                        
+                        # Stocker la meilleure raison
+                        if criteria_result["best_reason"]:
+                            article.suggested_reason = criteria_result["best_reason"]
+                        
+                        # Stocker TOUS les scores des critères dans ia_metadata
+                        article.ia_metadata = json.dumps({
+                            "model": self.model_name, 
+                            "processed_at": str(np.datetime64('now')),
+                            "criteria_scores": criteria_result["all_scores"]
+                        })
+                    else:
+                        article.ia_metadata = json.dumps({
+                            "model": self.model_name, 
+                            "processed_at": str(np.datetime64('now'))
+                        })
             
             db.commit()
             print(f"Updated scores for {len(articles)} articles.")
