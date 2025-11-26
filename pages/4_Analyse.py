@@ -3,9 +3,9 @@ import graphviz
 from src.database import get_db, Article
 from sqlalchemy import func
 
-st.set_page_config(page_title="Analyse & PRISMA", page_icon="📊")
+st.set_page_config(page_title="Analyse & PRISMA")
 
-st.title("📊 Dashboard PRISMA")
+st.title("Dashboard PRISMA")
 st.markdown("Visualisation du flux de sélection des articles.")
 
 db = next(get_db())

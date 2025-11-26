@@ -26,6 +26,11 @@ class Article(Base):
     # Files
     pdf_path = Column(String, nullable=True)
     
+    # Text extraction
+    full_text = Column(Text, nullable=True)  # Texte complet extrait du PDF
+    text_extraction_status = Column(String, default="NOT_ATTEMPTED")  # SUCCESS, FAILED, NOT_ATTEMPTED
+    extraction_method = Column(String, nullable=True)  # pymupdf, marker, etc.
+    
     # PRISMA Status
     # Statuses: 'IDENTIFIED', 'SCREENED_IN', 'EXCLUDED_SCREENING', 'ELIGIBLE', 'EXCLUDED_ELIGIBILITY', 'INCLUDED'
     status = Column(String, default="IDENTIFIED", index=True)
