@@ -20,6 +20,10 @@ from pathlib import Path
 
 st.set_page_config(page_title="Analyse & Reporting", layout="wide")
 
+# === DESIGN SYSTEM PREMIUM ===
+from src.ui_utils import load_premium_css
+load_premium_css()
+
 # ==================== HEADER ====================
 st.title("📊 Analyse & Reporting PRISMA")
 st.caption("Synthèse complète de la revue systématique")
@@ -27,9 +31,36 @@ st.caption("Synthèse complète de la revue systématique")
 db = next(get_db())
 
 # ==================== STATISTIQUES GLOBALES ====================
+# ==================== STATISTIQUES GLOBALES ====================
 st.subheader("📈 Vue d'Ensemble")
 
-stats = get_global_stats(db)
+# FILTRAGE PAR SESSION ACTIVE
+active_session_id = st.session_state.get('active_session_id')
+active_session_query = st.session_state.get('active_session_query', 'Toutes sessions')
+
+if active_session_id:
+    st.caption(f"📂 Session active : **{active_session_query}** (ID: {active_session_id})")
+    if st.button("Voir toutes les sessions", key="btn_reset_session_analyse"):
+        del st.session_state['active_session_id']
+        st.rerun()
+    
+    # Recalculer stats pour la session
+    # Note: get_global_stats prend db, on va devoir filtrer manuellement ou modifier la fonction
+    # Pour faire simple et rapide sans casser l'API, on fait des requêtes directes ici
+    stats = {
+        'identified': db.query(Article).filter(Article.search_session_id == active_session_id).count(),
+        'screened_out': db.query(Article).filter(Article.search_session_id == active_session_id, Article.status == "EXCLUDED_SCREENING").count(),
+        'screened_in': db.query(Article).filter(Article.search_session_id == active_session_id, Article.status == "INCLUDED_SCREENING").count(),
+        'excluded_eligibility': db.query(Article).filter(Article.search_session_id == active_session_id, Article.status == "EXCLUDED_ELIGIBILITY").count(),
+        'included': db.query(Article).filter(Article.search_session_id == active_session_id, Article.status == "INCLUDED").count()
+    }
+    if stats['identified'] > 0:
+        stats['inclusion_rate'] = (stats['included'] / stats['identified']) * 100
+    else:
+        stats['inclusion_rate'] = 0
+else:
+    st.caption("📂 Affichage de toutes les sessions")
+    stats = get_global_stats(db)
 
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("📥 Identifiés", stats['identified'])
@@ -56,8 +87,11 @@ with col_diagram:
     # Générer diagramme PRISMA STANDARD
     with st.spinner("Génération du diagramme PRISMA..."):
         try:
-            # Comptages
-            total_identified = db.query(Article).count()
+            # Comptages (Filtrés par session si active)
+            if active_session_id:
+                total_identified = db.query(Article).filter(Article.search_session_id == active_session_id).count()
+            else:
+                total_identified = db.query(Article).count()
             
             if total_identified == 0:
                 st.warning("⚠️ Aucun article en base de données. Lancez une recherche d'abord.")
@@ -120,6 +154,13 @@ with col_diagram:
                 y_dedup = y_start - spacing
                 add_rect(2, y_dedup, 4, 1, f'Records after duplicates removed\n(n={total_identified})')
                 add_arrow(4, y_dedup, 4, y_dedup - 1.0)
+                
+                # Exclusion Concept Filter (si > 0)
+                excluded_concept = db.query(Article).filter(Article.status == 'EXCLUDED_CONCEPT_FILTER').count()
+                if excluded_concept > 0:
+                    add_arrow(6, y_dedup + 0.5, 7.5, y_dedup + 0.5)
+                    add_rect(7.5, y_dedup, 4, 1, f'Records excluded by\nconcept filter\n(n={excluded_concept})', 
+                            facecolor='#FFE6E6')
                 
                 # Screening
                 y_screen = y_dedup - spacing

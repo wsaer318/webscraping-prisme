@@ -10,6 +10,10 @@ import json
 
 st.set_page_config(page_title="Éligibilité", layout="wide")
 
+# === DESIGN SYSTEM PREMIUM ===
+from src.ui_utils import load_premium_css
+load_premium_css()
+
 # Initialisation
 db = next(get_db())
 manager = EligibilityManager(db)

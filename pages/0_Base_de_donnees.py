@@ -7,6 +7,10 @@ import json
 
 st.set_page_config(page_title="Base de données", layout="wide")
 
+# === DESIGN SYSTEM PREMIUM ===
+from src.ui_utils import load_premium_css
+load_premium_css()
+
 st.title("Base de données des Articles")
 
 # Initialize database
