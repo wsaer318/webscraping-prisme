@@ -34,28 +34,54 @@ def save_decision(article_id, status, reason=None):
     db.close()
     st.rerun()
 
-# CSS pour améliorer l'affichage du texte
-st.markdown("""
-<style>
-    .reportview-container .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    .stTextArea textarea {
-        font-size: 14px;
-    }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="Screening", layout="wide")
 
-st.title("Screening Unifié")
-st.markdown("Triez les articles sur la base du **Titre**, de l'**Abstract** et du **Texte Complet**.")
+# === DESIGN SYSTEM PREMIUM ===
+from src.ui_utils import load_premium_css
+load_premium_css()
+
+st.title("📋 Screening")
 
 db = next(get_db())
-# Récupérer les articles à screener (IDENTIFIED)
-articles = db.query(Article).filter(Article.status == "IDENTIFIED").all()
+
+# FILTRAGE PAR SESSION ACTIVE
+active_session_id = st.session_state.get('active_session_id')
+active_session_query = st.session_state.get('active_session_query', 'Toutes sessions')
+
+# === HEADER PREMIUM ===
+col_title, col_badge, col_action = st.columns([3, 4, 2])
+
+with col_title:
+    st.markdown("### Articles à évaluer")
+
+with col_badge:
+    if active_session_id:
+        st.markdown(f'<div class="session-badge">🔬 {active_session_query}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="session-badge">📦 Toutes les sessions</div>', unsafe_allow_html=True)
+
+with col_action:
+    if active_session_id:
+        if st.button("↩️ Tout afficher"):
+            del st.session_state['active_session_id']
+            st.rerun()
+
+st.markdown("<hr>", unsafe_allow_html=True)
+
+# Récupérer articles
+if active_session_id:
+    articles = db.query(Article).filter(
+        Article.status == "IDENTIFIED",
+        Article.search_session_id == active_session_id
+    ).all()
+else:
+    articles = db.query(Article).filter(Article.status == "IDENTIFIED").all()
 
 if not articles:
-    st.info("Aucun article à screener ! Allez dans l'onglet 'Recherche' pour en ajouter.")
+    if active_session_id:
+        st.warning(f"Aucun article trouvé pour la session '{active_session_query}'.")
+    else:
+        st.info("Aucun article à screener ! Allez dans l'onglet 'Recherche' pour en ajouter.")
     db.close()
 else:
     # --- LOGIQUE DE TRI & SUGGESTIONS (LECTURE BDD) ---
@@ -67,14 +93,13 @@ else:
         if session:
             session_query = session.query.split('[')[0].strip()
 
-    # Vérifier si des scores sont disponibles
+    # Statistiques sidebar
     scores_available = any(a.relevance_score is not None for a in articles)
-    
-    # Si des scores sont manquants, on peut proposer de relancer (cas de vieux articles)
     missing_scores_count = sum(1 for a in articles if a.relevance_score is None)
     
+    st.sidebar.metric("Articles à screener", len(articles))
     if missing_scores_count > 0:
-        st.sidebar.warning(f"⚠️ {missing_scores_count} articles en cours d'analyse ou sans score.")
+        st.sidebar.caption(f"⚠️ {missing_scores_count} sans score IA")
         if st.sidebar.button("Forcer l'analyse IA (Arrière-plan)", key="btn_force_missing"):
 
             def run_force_analysis(ids, q):
@@ -98,9 +123,105 @@ else:
         all_ids = [a.id for a in articles]
         thread = threading.Thread(target=run_reanalysis, args=(all_ids, session_query))
         thread.start()
-        st.sidebar.success(f"✓ Analyse relancée pour {len(all_ids)} articles !")
-        st.toast(f"Analyse en cours pour {len(all_ids)} articles...")
+        st.toast("Analyse complète lancée en arrière-plan !")
         st.rerun()
+
+    # --- SIDEBAR : PRÉ-TRI SÉMANTIQUE ---
+    with st.sidebar:
+        st.divider()
+        st.subheader("🧠 Pré-tri Automatique")
+        st.caption("Exlure les articles hors-sujet")
+        
+        # Init state avec dernière session BDD
+        latest_session = db.query(SearchSession).order_by(SearchSession.id.desc()).first()
+        if latest_session:
+            clean_query = latest_session.query.split('[')[0].strip()
+            last_loaded_id = st.session_state.get('last_loaded_session_id')
+            if latest_session.id != last_loaded_id or "sem_concepts" not in st.session_state:
+                st.session_state.sem_concepts = clean_query
+                st.session_state.last_loaded_session_id = latest_session.id
+        else:
+            if "sem_concepts" not in st.session_state:
+                st.session_state.sem_concepts = "machine learning"
+
+        # Input concepts
+        st.text_input(
+            "Concepts", 
+            key="sem_concepts",
+            help="Séparés par virgule",
+            label_visibility="collapsed"
+        )
+        
+        # Bouton Suggérer
+        def suggest_concepts():
+            from src.concept_extractor import extract_concepts
+            query_source = session_query if latest_session is None else latest_session.query.split('[')[0].strip()
+            extracted = extract_concepts(query_source, max_concepts=3)
+            st.session_state.sem_concepts = ", ".join(extracted)
+            st.session_state.trigger_rerun = True
+        
+        if st.button("✨ Suggérer concepts", use_container_width=True, on_click=suggest_concepts):
+            pass
+        
+        # Rerun trigger
+        if st.session_state.get('trigger_rerun', False):
+            st.session_state.trigger_rerun = False
+            st.rerun()
+        
+        # Options filtre
+        filter_mode = st.radio("Mode", ["OR (≥1)", "AND (tous)"], index=0)
+        sem_threshold = st.slider("Seuil", 0.0, 1.0, 0.3, 0.05, help="Similarité minimale")
+        
+        if st.button("Lancer le Pré-tri Sémantique"):
+            # Mettre à jour la valeur utilisée avec celle de l'input (au cas où modifiée manuellement)
+            current_concepts = concepts_input
+            from src.concept_filter import filter_articles_semantically
+            
+            # Préparer les données
+            articles_data = []
+            for art in articles:
+                articles_data.append({
+                    'id': art.id,
+                    'title': art.title,
+                    'abstract': art.abstract,
+                    'full_text': art.full_text
+                })
+            
+            concepts = [c.strip() for c in concepts_input.split(',') if c.strip()]
+            mode = "AND" if "AND" in filter_mode else "OR"
+            
+            with st.spinner("Filtrage sémantique en cours..."):
+                retained = filter_articles_semantically(
+                    articles_data,
+                    concepts,
+                    threshold=sem_threshold,
+                    mode=mode
+                )
+                
+                retained_ids = {art['id'] for art in retained}
+                excluded_count = 0
+                
+                # Appliquer les exclusions
+                for art in articles:
+                    if art.id not in retained_ids:
+                        # Mise à jour statut
+                        art.status = "EXCLUDED_SEMANTIC_FILTER"
+                        
+                        # Historique
+                        history = ArticleHistory(
+                            article_id=art.id,
+                            previous_status="IDENTIFIED",
+                            new_status="EXCLUDED_SEMANTIC_FILTER",
+                            action="AUTO_FILTER",
+                            reason=f"Pré-tri Sémantique ({mode}) - Concepts: {', '.join(concepts)} - Score < {sem_threshold}",
+                            user="System (AI)"
+                        )
+                        db.add(history)
+                        excluded_count += 1
+                
+                db.commit()
+                st.success(f"Pré-tri terminé ! {excluded_count} articles exclus sur {len(articles)}.")
+                st.rerun()
     
     # Récupérer les scores pour le tri
     # On utilise une valeur par défaut (-1) pour les articles sans score pour qu'ils soient à la fin (ou au début ?)
@@ -193,8 +314,7 @@ else:
         threshold = st.sidebar.slider(
             "Seuil de suggestion (0-1)", 
             0.0, 1.0, 
-            st.session_state.user_threshold, # Valeur par défaut (initiale)
-            0.05, 
+            step=0.05, 
             key="user_threshold", # Persistance automatique
             help="Score au-dessus duquel l'IA suggère d'INCLURE."
         )

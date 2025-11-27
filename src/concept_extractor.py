@@ -36,26 +36,22 @@ def extract_concepts(query: str, max_concepts: int = 5) -> List[str]:
         # Initialiser le client
         client = InferenceClient(token=hf_token)
         
-        # Prompt pour extraction de concepts
-        prompt = f"""You are a research assistant analyzing search queries for systematic reviews.
-
-TASK: Extract {max_concepts} key concepts from this research query.
+        # Prompt optimisé pour la stratégie "Broad & Essential"
+        # Objectif : Maximiser le rappel (recall) en évitant les concepts trop spécifiques
+        prompt = f"""You are an expert in systematic review search strategies.
+TASK: Extract the 2-3 most ESSENTIAL and BROAD concepts from this query.
 
 QUERY: "{query}"
 
 RULES:
-1. Return ONLY the most important concepts (nouns, domains, entities)
-2. Remove stop words (the, of, on, in, etc.)
-3. Keep multi-word concepts together (e.g., "machine learning" not ["machine", "learning"])
-4. Output format: one concept per line, no numbering, no explanation
+1. Focus on the CORE subject and methodology (e.g. for "AI in lung cancer detection", return "artificial intelligence", "lung cancer").
+2. AVOID specific details that might restrict results too much.
+3. Keep compound terms together (e.g. "machine learning").
+4. OUTPUT FORMAT: Raw text only. One concept per line. NO numbering (1., 2.), NO bullets (-), NO prefixes.
 
-EXAMPLE:
-Query: "the effect of light on matter in physics"
-Output:
-light
-matter
-effect
-physics
+Example Output:
+artificial intelligence
+lung cancer
 
 Now extract concepts from: "{query}" """
 
@@ -72,11 +68,17 @@ Now extract concepts from: "{query}" """
         response_text = response.choices[0].message.content.strip()
         
         # Extraire les concepts (une ligne = un concept)
-        concepts = [
-            line.strip().lower() 
-            for line in response_text.split('\n') 
-            if line.strip() and not line.strip().startswith(('Output:', 'Query:', '-', '*'))
-        ]
+        concepts = []
+        for line in response_text.split('\n'):
+            line = line.strip()
+            if not line or line.startswith(('Output:', 'Query:', 'Here are')):
+                continue
+            
+            # Nettoyer numérotation (1. concept) ou puces (- concept)
+            clean_concept = re.sub(r'^[\d\-\*\•\>]+[\.\)\s]*', '', line).strip().lower()
+            
+            if clean_concept:
+                concepts.append(clean_concept)
         
         # Nettoyer et limiter
         concepts = [c for c in concepts if len(c) > 2 and len(c) < 50][:max_concepts]

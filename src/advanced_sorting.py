@@ -62,43 +62,74 @@ class AdvancedRanker:
                 break
         return chunks
 
-    def compute_scores(self, articles: list, query: str) -> dict:
+    def compute_scores(self, articles: list, query: str, alpha: float = 0.7) -> dict:
         """
-        Calcule les scores avec Chunking sur le texte complet.
-        Stratégie : Max Pooling sur les chunks (on garde le score du meilleur passage).
+        Calcule les scores Hybrides (Sémantique + BM25).
+        alpha: Poids du score sémantique (0.0 à 1.0). 1.0 = 100% Sémantique.
         """
         if not articles or not query:
             return {}
 
         final_scores = {}
+        
+        # --- 1. Score Sémantique (Bi-Encoder) ---
         query_embedding = self.model.encode(query, convert_to_tensor=True)
-        # Move query to CPU numpy for cosine_similarity
         query_vec = query_embedding.cpu().numpy().reshape(1, -1)
-
+        
+        semantic_scores = []
+        corpus_texts = [] # Pour BM25
+        
         for art in articles:
-            # 1. Construction du texte complet
+            # Construction du texte
             title = self.preprocess_text(art.get('title', ''))
             abstract = self.preprocess_text(art.get('abstract', ''))
             full_text = self.preprocess_text(art.get('full_text', ''))
             
-            # On combine tout, le titre est répété pour l'importance
+            # Texte combiné pour chunks
             combined_text = f"{title} {title} {abstract} {full_text}".strip()
             
-            # 2. Chunking
+            # Texte pour BM25 (tokenisé plus tard)
+            corpus_texts.append(combined_text)
+            
+            # Chunking & Embedding
             chunks = self.chunk_text(combined_text)
             if not chunks:
-                final_scores[art['id']] = 0.0
+                semantic_scores.append(0.0)
                 continue
                 
-            # 3. Encodage des chunks
             chunk_embeddings = self.model.encode(chunks, convert_to_tensor=True)
             chunk_vecs = chunk_embeddings.cpu().numpy()
             
-            # 4. Similarité Sémantique (Max Pooling)
+            # Max Pooling
             sims = cosine_similarity(query_vec, chunk_vecs)[0]
-            semantic_score = float(np.max(sims))
+            semantic_scores.append(float(np.max(sims)))
             
-            final_scores[art['id']] = semantic_score
+        # --- 2. Score Lexical (BM25) ---
+        # Tokenisation simple pour BM25
+        tokenized_corpus = [doc.split(" ") for doc in corpus_texts]
+        bm25 = BM25Okapi(tokenized_corpus)
+        tokenized_query = query.lower().split(" ")
+        bm25_scores = bm25.get_scores(tokenized_query)
+        
+        # --- 3. Normalisation & Fusion ---
+        def normalize(scores):
+            if not scores: return []
+            arr = np.array(scores)
+            min_val, max_val = arr.min(), arr.max()
+            if max_val == min_val: return np.zeros_like(arr)
+            return (arr - min_val) / (max_val - min_val)
+
+        norm_semantic = normalize(semantic_scores)
+        norm_bm25 = normalize(bm25_scores)
+        
+        # Fusion pondérée
+        for idx, art in enumerate(articles):
+            hybrid_score = (alpha * norm_semantic[idx]) + ((1 - alpha) * norm_bm25[idx])
+            final_scores[art['id']] = float(hybrid_score)
+            
+            # Stockage des détails pour debug/analyse
+            # On pourrait stocker ça dans ia_metadata si besoin
+            # art['debug_scores'] = {'sem': norm_semantic[idx], 'bm25': norm_bm25[idx]}
 
         return final_scores
 

@@ -11,7 +11,11 @@ import re
 
 st.set_page_config(page_title="Recherche", layout="wide")
 
-st.title("Recherche d'Articles")
+# === DESIGN SYSTEM PREMIUM ===
+from src.ui_utils import load_premium_css
+load_premium_css()
+
+st.title("🔍 Recherche d'Articles")
 
 init_db()
 db = next(get_db())
@@ -24,7 +28,9 @@ with tab1:
     st.info("Mode recommandé : Recherche sur arXiv avec enrichissement automatique des métadonnées")
     
     with st.form("auto_search"):
-        query = st.text_input("Mots-clés de recherche", "machine learning")
+        # Récupérer la dernière recherche ou valeur par défaut
+        default_query = st.session_state.get('active_session_query', "machine learning")
+        query = st.text_input("Mots-clés de recherche", default_query)
         
         # Mode de recherche
         search_mode = st.radio(
@@ -57,28 +63,6 @@ with tab1:
             enrich = st.checkbox("Enrichir avec PubMed/Crossref (DOIs)", value=True, 
                                 help="Cherche les mêmes articles sur PubMed/Crossref pour obtenir les DOIs manquants")
         
-        # Filtrage Multi-Concepts
-        with st.expander("🔬 Filtrage Multi-Concepts (Avancé)", expanded=False):
-            st.warning("⚠️ Filtrage strict - Peut éliminer beaucoup d'articles. Recommandation : 1-2 concepts max, mode OR")
-            
-            enable_concept_filter = st.checkbox("Activer le filtrage conceptuel", value=False, key="enable_concepts")
-            
-            if enable_concept_filter:
-                col_a, col_b = st.columns([2, 1])
-                
-                with col_a:
-                    st.caption("💡 Concepts auto-extraits de votre requête")
-                    st.code(query if query else "machine learning", language=None)
-                
-                with col_b:
-                    concept_mode = st.radio("Mode", ["AND (tous)", "OR (≥1)"], index=0, key="concept_mode")
-                
-                manual_concepts = st.text_input(
-                    "Concepts personnalisés (optionnel)",
-                    placeholder="concept1, concept2, concept3",
-                    help="Laisser vide pour auto-extraction LLM",
-                    key="manual_concepts"
-                )
         
         submitted = st.form_submit_button("Lancer la recherche automatique")
     
@@ -96,35 +80,7 @@ with tab1:
             arxiv = ArxivScraper()
             arxiv_results = arxiv.search(query, max_results=num_results)
             
-            # FILTRAGE MULTI-CONCEPTS (si activé)
-            if enable_concept_filter:
-                status.text("Phase 1b/3 : Filtrage par concepts...")
-                progress.progress(0.25)
-                
-                from src.concept_extractor import extract_concepts
-                from src.concept_filter import filter_articles_by_concepts
-                
-                # Extraction concepts
-                if manual_concepts:
-                    concepts = [c.strip() for c in manual_concepts.split(',') if c.strip()]
-                    st.info(f"Concepts personnalisés : {concepts}")
-                else:
-                    concepts = extract_concepts(query, max_concepts=5)
-                    st.success(f"Concepts extraits : {concepts}")
-                
-                # Filtrage
-                mode = "AND" if "AND" in concept_mode else "OR"
-                initial_count = len(arxiv_results)
-                
-                arxiv_results = filter_articles_by_concepts(
-                    arxiv_results,
-                    concepts,
-                    mode=mode,
-                    search_in_fulltext=True
-                )
-                
-                filtered_count = len(arxiv_results)
-                st.warning(f"Filtrage {mode}: {filtered_count}/{initial_count} articles retenus")
+            progress.progress(0.4)
             
             # Créer session arXiv
             session = SearchSession(
@@ -137,28 +93,38 @@ with tab1:
             db.commit()
             db.refresh(session)
             
-            progress.progress(0.4)
+            # Debug session ID
+            # print(f"DEBUG: Session créée ID={session.id} pour {len(arxiv_results)} résultats")
             
+            # PERSISTANCE SESSION
+            st.session_state.active_session_id = session.id
+            st.session_state.active_session_query = query
+            st.toast(f"Session active : {query}")
+
             # Sauvegarder arXiv
             status.text("Phase 2/3 : Sauvegarde des articles arXiv...")
             for result in arxiv_results:
                 # Déduplication par DOI ou titre
-                is_duplicate = False
-                if result.get('doi'):
-                    exists = db.query(Article).filter(Article.doi == result['doi']).first()
-                    if exists:
-                        is_duplicate = True
+                existing_article = None
                 
-                if not is_duplicate:
+                if result.get('doi'):
+                    existing_article = db.query(Article).filter(Article.doi == result['doi']).first()
+                
+                if not existing_article:
                     normalized_title = re.sub(r'[^\w\s]', '', result['title'].lower())
                     all_articles = db.query(Article).all()
                     for art in all_articles:
                         art_normalized = re.sub(r'[^\w\s]', '', art.title.lower())
                         if art_normalized == normalized_title:
-                            is_duplicate = True
+                            existing_article = art
                             break
                 
-                if not is_duplicate:
+                if existing_article:
+                    # Si l'article existe, on le lie à la NOUVELLE session pour qu'il apparaisse
+                    existing_article.search_session_id = session.id
+                    # On met à jour le statut si nécessaire (optionnel, on garde l'historique)
+                    # existing_article.status = "IDENTIFIED" 
+                else:
                     article = Article(
                         title=result['title'],
                         authors=result.get('authors'),

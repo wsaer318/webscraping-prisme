@@ -147,6 +147,134 @@ def filter_articles_by_concepts(
     return filtered
 
 
+    return filtered
+
+
+def chunk_text(text: str, chunk_size: int = 400, stride: int = 200, max_chunks: int = 30) -> List[str]:
+    """
+    Découpe le texte en morceaux (chunks) avec chevauchement.
+    """
+    if not text:
+        return []
+    words = text.split()
+    if len(words) <= chunk_size:
+        return [text]
+        
+    chunks = []
+    for i in range(0, len(words), stride):
+        chunk = " ".join(words[i:i+chunk_size])
+        chunks.append(chunk)
+        if i + chunk_size >= len(words):
+            break
+        if len(chunks) >= max_chunks:
+            break
+    return chunks
+
+
+def filter_articles_semantically(
+    articles: List[Dict],
+    concepts: List[str],
+    threshold: float = 0.6,
+    mode: str = "AND"
+) -> List[Dict]:
+    """
+    Filtre les articles sémantiquement (Embeddings) sur le Full Text
+    
+    Args:
+        articles: Liste d'articles
+        concepts: Concepts requis
+        threshold: Seuil de similarité (0.0 à 1.0)
+        mode: "AND" ou "OR"
+        
+    Returns:
+        Articles filtrés
+    """
+    try:
+        from sentence_transformers import SentenceTransformer, util
+        import torch
+        
+        # Chargement du modèle
+        model_name = "paraphrase-MiniLM-L3-v2"
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"Loading Semantic Model: {model_name} on {device}...")
+        model = SentenceTransformer(model_name, device=device)
+        
+        filtered = []
+        print(f"\n🧠 Filtrage Sémantique Full-Text (Seuil {threshold}, Mode {mode}):")
+        
+        # Encoder les concepts
+        concept_embeddings = model.encode(concepts, convert_to_tensor=True)
+        
+        for article in articles:
+            # 1. Préparer le texte (Full Text prioritaire, sinon Abstract)
+            full_text = article.get('full_text', '')
+            abstract = article.get('abstract', '')
+            title = article.get('title', '')
+            
+            # Combiner intelligemment
+            if full_text and len(full_text) > 500:
+                # Si full text dispo, on l'utilise avec le titre
+                text_source = f"{title}\n\n{full_text}"
+            else:
+                # Sinon fallback sur abstract
+                text_source = f"{title}\n\n{abstract}"
+            
+            if not text_source.strip():
+                continue
+                
+            # 2. Chunking
+            chunks = chunk_text(text_source)
+            if not chunks:
+                continue
+                
+            # 3. Encoder tous les chunks de l'article
+            # Cela crée une matrice [n_chunks, embedding_dim]
+            chunk_embeddings = model.encode(chunks, convert_to_tensor=True)
+            
+            # 4. Calculer similarité (Chunks vs Concepts)
+            # Résultat: [n_chunks, n_concepts]
+            # On veut savoir: Pour chaque concept, quel est le MEILLEUR chunk ?
+            # Donc on prend le MAX sur l'axe des chunks (dim 0)
+            
+            # cos_sim(a, b) -> matrice [len(a), len(b)]
+            chunk_concept_sims = util.cos_sim(chunk_embeddings, concept_embeddings)
+            
+            # Max par colonne (pour chaque concept, le meilleur score parmi tous les chunks)
+            # values est un tenseur [n_concepts]
+            best_scores_per_concept, _ = torch.max(chunk_concept_sims, dim=0)
+            
+            # 5. Vérifier les seuils
+            matched_concepts = {}
+            for idx, score in enumerate(best_scores_per_concept):
+                score_val = float(score)
+                if score_val >= threshold:
+                    matched_concepts[concepts[idx]] = score_val
+            
+            # 6. Décision
+            keep = False
+            if mode == "AND":
+                if len(matched_concepts) == len(concepts):
+                    keep = True
+            elif mode == "OR":
+                if len(matched_concepts) > 0:
+                    keep = True
+            
+            if keep:
+                article['matched_concepts'] = matched_concepts
+                article['semantic_score'] = float(torch.mean(best_scores_per_concept)) # Score moyen global
+                filtered.append(article)
+                
+        print(f"✓ Filtrage Sémantique terminé : {len(filtered)}/{len(articles)} articles retenus")
+        return filtered
+        
+    except ImportError:
+        print("❌ Erreur: sentence_transformers non installé.")
+        return []
+    except Exception as e:
+        print(f"❌ Erreur Filtrage Sémantique: {e}")
+        return []
+
+
 def get_concept_coverage_stats(articles: List[Dict], concepts: List[str]) -> Dict:
     """
     Analyse la couverture des concepts dans les articles
