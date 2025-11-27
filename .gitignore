@@ -134,9 +134,6 @@ dmypy.json
 *.joblib
 pipeline.log
 articles_report.json
-visualizations/*.png
-visualizations/*.jpg
-visualizations/*.jpeg
 
 # Fichiers temporaires
 *.tmp
@@ -144,33 +141,30 @@ visualizations/*.jpeg
 .DS_Store
 Thumbs.db
 
-# Leonel scraper outputs
-leonel/Prueba1web.html
-leonel/resultado.html
-leonel/resultados_google_scholar.json
-leonel/schoolargoogle.html
-leonel/pdf/
-
 # ========================================
 # PRISMA PROJECT - Résultats de recherche
 # ========================================
 
-# Base de données SQLite (contient les articles)
+# Base de données SQLite (contient articles + PDFs)
 data/prisma.db
 data/prisma.db-journal
 
-# PDFs téléchargés (peuvent être volumineux et sensibles)
+# PDFs téléchargés (volumineux)
 data/0_raw/pdfs/
-data/*/pdfs/
 
 # Fichiers de debug du scraping
 debug_*.html
 debug_*.json
 
-# Exports CSV/JSON
+# Exports CSV/JSON générés
 *_export_*.csv
 *_export_*.json
 prisma_export_*
+data/*.csv
+data/*.xlsx
+data/*.json
+data/*.bib
+data/prisma_flow.png
 
 # Logs de scraping
 scraping_*.log
