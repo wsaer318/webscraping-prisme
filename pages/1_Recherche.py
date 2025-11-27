@@ -59,7 +59,7 @@ with tab1:
         
         # Filtrage Multi-Concepts
         with st.expander("🔬 Filtrage Multi-Concepts (Avancé)", expanded=False):
-            st.info("Filtre les articles contenant TOUS les concepts (mode AND)")
+            st.warning("⚠️ Filtrage strict - Peut éliminer beaucoup d'articles. Recommandation : 1-2 concepts max, mode OR")
             
             enable_concept_filter = st.checkbox("Activer le filtrage conceptuel", value=False, key="enable_concepts")
             
