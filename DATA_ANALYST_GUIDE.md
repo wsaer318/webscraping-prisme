@@ -1,10 +1,10 @@
-# 📊 Guide Analyste de Données - PRISMA Review Manager
+# Guide Analyste de Données - PRISMA Review Manager
 
 Ce document technique détaille les méthodologies statistiques, les algorithmes de NLP et les structures de données utilisés dans PRISMA Review Manager. Il est destiné aux Data Scientists, Bibliométriciens et Analystes.
 
 ---
 
-## 🧠 Méthodologie Algorithmique & Statistique
+## Méthodologie Algorithmique & Statistique
 
 ### 1. Recherche Hybride (Hybrid Search)
 
@@ -54,7 +54,7 @@ $$ \text{Logit}(D, C) = f_{\theta}(\text{concat}(D, C)) $$
 
 ---
 
-## 🔄 Flux de Données & ETL
+## Flux de Données & ETL
 
 ### Pipeline d'Ingestion
 1.  **Raw Data** : JSON/XML provenant des APIs (arXiv, PubMed).
@@ -74,7 +74,7 @@ $$ \text{Logit}(D, C) = f_{\theta}(\text{concat}(D, C)) $$
 
 ---
 
-## 💾 Schéma de Données & Exports
+## Schéma de Données & Exports
 
 ### Structure SQL (Relationnelle)
 Le schéma est normalisé (3NF) pour garantir l'intégrité.
@@ -105,7 +105,7 @@ Aplatit les données pour l'analyse pivot.
 
 ---
 
-## 🛠️ Outils Recommandés
+## Outils Recommandés
 
 Pour explorer la base de données `prisma.db` (SQLite) :
 *   **Python** : `pandas.read_sql("SELECT * FROM articles", con)`
