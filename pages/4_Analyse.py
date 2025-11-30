@@ -97,9 +97,9 @@ with col_diagram:
                 st.warning("⚠️ Aucun article en base de données. Lancez une recherche d'abord.")
             else:
                 screened_completed = db.query(Article).filter(
-                    Article.status.in_(['SCREENED_IN', 'SCREENED_OUT', 'INCLUDED', 'EXCLUDED_ELIGIBILITY'])
+                    Article.status.in_(['SCREENED_IN', 'EXCLUDED_SCREENING', 'INCLUDED', 'EXCLUDED_ELIGIBILITY'])
                 ).count()
-                screened_out = db.query(Article).filter(Article.status == 'SCREENED_OUT').count()
+                screened_out = db.query(Article).filter(Article.status == 'EXCLUDED_SCREENING').count()
                 screened_in = db.query(Article).filter(
                     Article.status.in_(['SCREENED_IN', 'INCLUDED', 'EXCLUDED_ELIGIBILITY'])
                 ).count()
@@ -156,7 +156,7 @@ with col_diagram:
                 add_arrow(4, y_dedup, 4, y_dedup - 1.0)
                 
                 # Exclusion Concept Filter (si > 0)
-                excluded_concept = db.query(Article).filter(Article.status == 'EXCLUDED_CONCEPT_FILTER').count()
+                excluded_concept = db.query(Article).filter(Article.status == 'EXCLUDED_SEMANTIC_FILTER').count()
                 if excluded_concept > 0:
                     add_arrow(6, y_dedup + 0.5, 7.5, y_dedup + 0.5)
                     add_rect(7.5, y_dedup, 4, 1, f'Records excluded by\nconcept filter\n(n={excluded_concept})', 

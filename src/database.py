@@ -24,6 +24,10 @@ class SearchSession(Base):
     
     # Relation inverse
     articles = relationship("Article", back_populates="session")
+    semantic_filters = relationship("SemanticFilterRun", back_populates="session")
+    ai_analyses = relationship("AIAnalysisRun", back_populates="session")
+    screening_sessions = relationship("ScreeningSession", back_populates="session")
+
 
 
 class Article(Base):
@@ -52,6 +56,9 @@ class Article(Base):
     relevance_score = Column(Float, nullable=True)
     suggested_reason = Column(String, nullable=True) # Raison suggérée par le Cross-Encoder
     ia_metadata = Column(Text, nullable=True) # JSON string pour détails (méthode, confiance, chunks)
+    
+    # External Metrics
+    citation_count = Column(Integer, nullable=True, default=0)
     
     # PRISMA Status
     status = Column(String, default="IDENTIFIED", index=True)
@@ -126,6 +133,93 @@ class EligibilityCriteria(Base):
     active = Column(Integer, default=1)
     
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SemanticFilterRun(Base):
+    """Trace des exécutions de pré-tri sémantique pour traçabilitéPRISMA"""
+    __tablename__ = 'semantic_filter_runs'
+    
+    id = Column(Integer, primary_key=True, index=True)
+    search_session_id = Column(Integer, ForeignKey('search_sessions.id'), nullable=True)
+    
+    # Paramètres du filtre
+    concepts = Column(String, nullable=False)  # JSON array
+    threshold = Column(Float, nullable=False)
+    mode = Column(String, nullable=False)  # "AND" or "OR"
+    
+    # Résultats
+    articles_before = Column(Integer)
+    articles_excluded = Column(Integer)
+    articles_retained = Column(Integer)
+    
+    # Métadonnées
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user = Column(String, default="User")
+    
+    # Relations
+    session = relationship("SearchSession", back_populates="semantic_filters")
+
+
+class AIAnalysisRun(Base):
+    """Trace des exécutions d'analyse IA"""
+    __tablename__ = 'ai_analysis_runs'
+    
+    id = Column(Integer, primary_key=True, index=True)
+    search_session_id = Column(Integer, ForeignKey('search_sessions.id'), nullable=True)
+    
+    # Paramètres
+    model_name = Column(String, nullable=False)
+    alpha = Column(Float, default=0.7)
+    active_criteria = Column(Text, nullable=True)  # JSON
+    
+    # Résultats
+    articles_targeted = Column(Integer)
+    articles_scored = Column(Integer)
+    articles_failed = Column(Integer)
+    
+    # Timing
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    status = Column(String, default="RUNNING")
+    error_log = Column(Text, nullable=True)
+    
+    # Relations
+    session = relationship("SearchSession", back_populates="ai_analyses")
+
+
+class ExclusionCriteriaSnapshot(Base):
+    """Snapshots des critères d'exclusion pour versioning"""
+    __tablename__ = 'exclusion_criteria_snapshots'
+    
+    id = Column(Integer, primary_key=True, index=True)
+    criteria_json = Column(Text, nullable=False)
+    generation_query = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String, default="User")
+    reason = Column(String, nullable=True)
+
+
+class ScreeningSession(Base):
+    """Sessions de screening manuel avec contexte"""
+    __tablename__ = 'screening_sessions'
+    
+    id = Column(Integer, primary_key=True, index=True)
+    search_session_id = Column(Integer, ForeignKey('search_sessions.id'), nullable=True)
+    user = Column(String, default="User")
+    suggestion_threshold = Column(Float, nullable=True)
+    criteria_snapshot_id = Column(Integer, ForeignKey('exclusion_criteria_snapshots.id'), nullable=True)
+    
+    articles_screened = Column(Integer, default=0)
+    articles_included = Column(Integer, default=0)
+    articles_excluded = Column(Integer, default=0)
+    
+    started_at = Column(DateTime, default=datetime.utcnow)
+    last_activity_at = Column(DateTime, nullable=True)
+    
+    # Relations
+    session = relationship("SearchSession", back_populates="screening_sessions")
+    criteria_snapshot = relationship("ExclusionCriteriaSnapshot")
 
 
 # Database Setup

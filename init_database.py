@@ -106,7 +106,7 @@ def init_complete_database():
     print("=" * 60)
     print("\nSchema Article inclut maintenant:")
     print("  - Colonnes Phase 1 (Recherche): title, authors, doi, abstract, pdf_path, full_text...")
-    print("  - Colonnes Phase 2 (Screening): status, exclusion_reason, notes, relevance_score...")
+    print("  - Colonnes Phase 2 (Screening): status, exclusion_reason, notes, relevance_score, citation_count...")
     print("  - Colonnes Phase 3 (Éligibilité): eligibility_notes, reviewed_at, reviewer")
     print("  - Métadonnées PDFs: pdf_url, arxiv_id")
 

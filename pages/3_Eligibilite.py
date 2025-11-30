@@ -49,7 +49,7 @@ if not articles_to_review:
     st.info("Passez à l'étape suivante : Analyse & Rapport")
     
     # Afficher statistiques finales
-    with st.expander("📊 Statistiques finales", expanded=True):
+    with st.expander("Statistiques finales", expanded=True):
         col1, col2 = st.columns(2)
         
         with col1:
@@ -74,7 +74,7 @@ article = articles_to_review[0]
 
 # Sidebar : Critères & Actions
 with st.sidebar:
-    st.subheader("🎯 Critères d'Éligibilité")
+    st.subheader("Critères d'Éligibilité")
     
     criteria = manager.get_active_criteria()
     
@@ -83,13 +83,13 @@ with st.sidebar:
     exclusion = [c for c in criteria if c['type'] == 'EXCLUSION']
     
     if inclusion:
-        st.write("**✅ Critères d'inclusion:**")
+        st.write("**Critères d'inclusion:**")
         for c in inclusion:
             with st.expander(c['label'], expanded=False):
                 st.caption(c['description'])
     
     if exclusion:
-        st.write("**❌ Critères d'exclusion:**")
+        st.write("**Critères d'exclusion:**")
         for c in exclusion:
             with st.expander(c['label'], expanded=False):
                 st.caption(c['description'])
@@ -99,12 +99,12 @@ with st.sidebar:
     # Navigation
     st.write(f"**Article {stats['reviewed'] + 1} / {stats['total_to_review'] + stats['reviewed']}**")
     
-    if st.button("⏭️ Passer (sans décision)", use_container_width=True):
+    if st.button("Passer", use_container_width=True):
         st.warning("Article passé (restera en SCREENED_IN)")
         st.rerun()
 
 # Main Content : Article Viewer
-st.subheader(f"📄 {article.title}")
+st.subheader(f"{article.title}")
 
 # Métadonnées
 col_meta1, col_meta2, col_meta3 = st.columns(3)
@@ -121,7 +121,7 @@ if article.link:
 st.divider()
 
 # Onglets : Abstract | Full Text
-tab_abstract, tab_fulltext = st.tabs(["📝 Abstract", "📄 Texte Complet"])
+tab_abstract, tab_fulltext = st.tabs(["Abstract", "Texte Complet"])
 
 with tab_abstract:
     if article.abstract:
@@ -212,7 +212,7 @@ with col_submit2:
     if decision == "EXCLUDED_ELIGIBILITY" and not selected_reasons:
         can_submit = False
     
-    if st.button("💾 Enregistrer Décision", 
+    if st.button("Enregistrer Décision", 
                  type="primary", 
                  use_container_width=True,
                  disabled=not can_submit):

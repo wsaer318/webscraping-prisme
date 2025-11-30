@@ -6,7 +6,7 @@ from sklearn.mixture import GaussianMixture
 import torch
 import os
 import json
-from src.database import get_db, Article, ExclusionCriteria
+from src.database import get_db, Article, ExclusionCriteria, AIAnalysisRun
 
 class AdvancedRanker:
     def __init__(self, model_name="paraphrase-MiniLM-L3-v2", cross_encoder_name="cross-encoder/ms-marco-TinyBERT-L-2-v2"):
@@ -230,10 +230,10 @@ class AdvancedRanker:
             
         return True
 
-    def process_batch_and_update_db(self, article_ids: list, query: str):
+    def process_batch_and_update_db(self, article_ids: list, query: str, alpha: float = 0.7):
         """
-        Méthode pour le traitement en arrière-plan.
-        Calcule les scores et met à jour la base de données directement.
+        Méthode pour le traitement en arrière-plan avec sauvegarde incrémentale.
+        Calcule BM25 globalement, puis Sémantique par petits lots.
         """
         db = next(get_db())
         try:
@@ -241,61 +241,180 @@ class AdvancedRanker:
             if not articles:
                 return
             
+            print(f"Starting incremental analysis for {len(articles)} articles...")
+            
             # Récupérer les critères d'exclusion actifs
             criteria = db.query(ExclusionCriteria).filter(ExclusionCriteria.active == 1).all()
             
-            # Préparation des données
-            articles_data = [
-                {
-                    "id": a.id, 
-                    "title": a.title, 
-                    "abstract": a.abstract,
-                    "full_text": a.full_text
-                } 
-                for a in articles
-            ]
+            # === LOGGING TRACABILITÉ : Créer l'entrée d'analyse ===
+            from datetime import datetime
+            start_time = datetime.utcnow()
             
-            # Calcul des scores (Bi-Encoder)
-            scores_dict = self.compute_scores(articles_data, query)
+            # Snapshot des critères actifs
+            criteria_snapshot = json.dumps([
+                {"label": c.label, "description": c.description}
+                for c in criteria
+            ]) if criteria else None
             
-            # Mise à jour DB
-            for article in articles:
-                # --- RÈGLE DURE : Validation Abstract ---
-                if not self.is_valid_abstract(article.abstract):
-                    article.relevance_score = 0.0
-                    article.suggested_reason = "Pas d'abstract" 
-                    article.ia_metadata = json.dumps({"model": "RuleBased", "reason": "Invalid/Missing Abstract"})
+            # Déterminer session_id depuis les articles
+            session_id = articles[0].search_session_id if articles else None
+            
+            # Créer l'entrée de run
+            analysis_run = AIAnalysisRun(
+                search_session_id=session_id,
+                model_name=self.model_name,
+                alpha=alpha,
+                active_criteria=criteria_snapshot,
+                articles_targeted=len(articles),
+                articles_scored=0,
+                articles_failed=0,
+                status="RUNNING"
+            )
+            db.add(analysis_run)
+            db.commit()  # Commit pour avoir l'ID
+            run_id = analysis_run.id
+            
+            # --- ÉTAPE 1 : Calcul BM25 Global (Rapide) ---
+            corpus_texts = []
+            valid_articles = [] # Articles avec texte valide pour BM25
+            
+            for art in articles:
+                # Validation Abstract (Règle dure)
+                if not self.is_valid_abstract(art.abstract):
+                    art.relevance_score = 0.0
+                    art.suggested_reason = "Pas d'abstract" 
+                    art.ia_metadata = json.dumps({"model": "RuleBased", "reason": "Invalid/Missing Abstract"})
+                    # On sauvegarde tout de suite les rejetés
                     continue
-
-                if article.id in scores_dict:
-                    score = scores_dict[article.id]
-                    article.relevance_score = score
-                    
-                    # Si le score est faible (< 0.4 par exemple), on cherche une raison
-                    if score < 0.4 and criteria:
-                        text_for_check = f"{article.title} {article.abstract}"
-                        criteria_result = self.check_exclusion_criteria(text_for_check, criteria)
-                        
-                        # Stocker la meilleure raison
-                        if criteria_result["best_reason"]:
-                            article.suggested_reason = criteria_result["best_reason"]
-                        
-                        # Stocker TOUS les scores des critères dans ia_metadata
-                        article.ia_metadata = json.dumps({
-                            "model": self.model_name, 
-                            "processed_at": str(np.datetime64('now')),
-                            "criteria_scores": criteria_result["all_scores"]
-                        })
-                    else:
-                        article.ia_metadata = json.dumps({
-                            "model": self.model_name, 
-                            "processed_at": str(np.datetime64('now'))
-                        })
+                
+                valid_articles.append(art)
+                
+                # Préparation texte BM25
+                title = self.preprocess_text(art.title or '')
+                abstract = self.preprocess_text(art.abstract or '')
+                full_text = self.preprocess_text(art.full_text or '')
+                combined_text = f"{title} {title} {abstract} {full_text}".strip()
+                corpus_texts.append(combined_text)
             
+            # Commit initial pour les rejetés (abstract invalide)
             db.commit()
-            print(f"Updated scores for {len(articles)} articles.")
+            
+            if not valid_articles:
+                return
+
+            # Calcul BM25
+            tokenized_corpus = [doc.split(" ") for doc in corpus_texts]
+            bm25 = BM25Okapi(tokenized_corpus)
+            tokenized_query = query.lower().split(" ")
+            bm25_scores = bm25.get_scores(tokenized_query)
+            
+            # Normalisation BM25
+            def normalize(scores):
+                if not scores.any(): return np.array([])
+                min_val, max_val = scores.min(), scores.max()
+                if max_val == min_val: return np.zeros_like(scores)
+                return (scores - min_val) / (max_val - min_val)
+
+            norm_bm25 = normalize(bm25_scores)
+            
+            # Mapping ID -> Score BM25 Normalisé
+            bm25_map = {art.id: score for art, score in zip(valid_articles, norm_bm25)}
+            
+            # --- ÉTAPE 2 : Calcul Sémantique Incrémental (Lent) ---
+            # On traite par petits lots pour sauvegarder souvent
+            BATCH_SIZE = 5
+            query_embedding = self.model.encode(query, convert_to_tensor=True)
+            query_vec = query_embedding.cpu().numpy().reshape(1, -1)
+            
+            total_processed = 0
+            
+            for i in range(0, len(valid_articles), BATCH_SIZE):
+                batch_articles = valid_articles[i:i+BATCH_SIZE]
+                
+                for art in batch_articles:
+                    try:
+                        # Préparation texte
+                        title = self.preprocess_text(art.title or '')
+                        abstract = self.preprocess_text(art.abstract or '')
+                        full_text = self.preprocess_text(art.full_text or '')
+                        combined_text = f"{title} {title} {abstract} {full_text}".strip()
+                        
+                        # Chunking & Embedding
+                        chunks = self.chunk_text(combined_text)
+                        
+                        semantic_score = 0.0
+                        if chunks:
+                            chunk_embeddings = self.model.encode(chunks, convert_to_tensor=True)
+                            chunk_vecs = chunk_embeddings.cpu().numpy()
+                            # Max Pooling (Cosine Similarity brut : -1 à 1)
+                            sims = cosine_similarity(query_vec, chunk_vecs)[0]
+                            semantic_score = float(np.max(sims))
+                            
+                            # Clip pour rester cohérent (0 à 1)
+                            semantic_score = max(0.0, min(1.0, semantic_score))
+                        
+                        # Score Hybride
+                        # Note: On utilise le score sémantique BRUT (0-1) au lieu de normalisé par batch
+                        # C'est plus stable pour l'incrémental.
+                        bm25_val = bm25_map.get(art.id, 0.0)
+                        hybrid_score = (alpha * semantic_score) + ((1 - alpha) * bm25_val)
+                        
+                        art.relevance_score = float(hybrid_score)
+                        
+                        # Vérification Critères (si score faible)
+                        if hybrid_score < 0.4 and criteria:
+                            text_for_check = f"{art.title} {art.abstract}"
+                            criteria_result = self.check_exclusion_criteria(text_for_check, criteria)
+                            
+                            if criteria_result["best_reason"]:
+                                art.suggested_reason = criteria_result["best_reason"]
+                            
+                            art.ia_metadata = json.dumps({
+                                "model": self.model_name, 
+                                "processed_at": str(np.datetime64('now')),
+                                "criteria_scores": criteria_result["all_scores"],
+                                "components": {"sem": semantic_score, "bm25": bm25_val}
+                            })
+                        else:
+                            art.ia_metadata = json.dumps({
+                                "model": self.model_name, 
+                                "processed_at": str(np.datetime64('now')),
+                                "components": {"sem": semantic_score, "bm25": bm25_val}
+                            })
+                            
+                    except Exception as e_art:
+                        print(f"Error processing article {art.id}: {e_art}")
+                        art.ia_metadata = json.dumps({"error": str(e_art)})
+                
+                # Sauvegarde intermédiaire
+                db.commit()
+                total_processed += len(batch_articles)
+                print(f"Progress: {total_processed}/{len(valid_articles)} articles saved.")
+            
+            # === LOGGING TRACABILITÉ : Finaliser ===
+            end_time = datetime.utcnow()
+            duration = int((end_time - start_time).total_seconds())
+            
+            analysis_run = db.query(AIAnalysisRun).filter(AIAnalysisRun.id == run_id).first()
+            if analysis_run:
+                analysis_run.articles_scored = total_processed
+                analysis_run.articles_failed = len(valid_articles) - total_processed
+                analysis_run.completed_at = end_time
+                analysis_run.duration_seconds = duration
+                analysis_run.status = "COMPLETED"
+                db.commit()
             
         except Exception as e:
-            print(f"Error in background processing: {e}")
+            print(f"Critical error in background processing: {e}")
+            # Marquer le run comme échoué
+            try:
+                analysis_run = db.query(AIAnalysisRun).filter(AIAnalysisRun.id == run_id).first()
+                if analysis_run:
+                    analysis_run.status = "FAILED"
+                    analysis_run.error_log = str(e)
+                    analysis_run.completed_at = datetime.utcnow()
+                    db.commit()
+            except:
+                pass
         finally:
             db.close()

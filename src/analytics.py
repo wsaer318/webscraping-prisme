@@ -15,7 +15,7 @@ def get_global_stats(db) -> Dict:
     
     # Comptages par statut
     stats['identified'] = db.query(Article).count()
-    stats['screened_out'] = db.query(Article).filter(Article.status == 'SCREENED_OUT').count()
+    stats['screened_out'] = db.query(Article).filter(Article.status == 'EXCLUDED_SCREENING').count()
     stats['screened_in'] = db.query(Article).filter(Article.status == 'SCREENED_IN').count()
     stats['excluded_eligibility'] = db.query(Article).filter(Article.status == 'EXCLUDED_ELIGIBILITY').count()
     stats['included'] = db.query(Article).filter(Article.status == 'INCLUDED').count()
@@ -44,7 +44,7 @@ def get_exclusion_distribution(db) -> Dict:
     }
     
     # Phase Screening
-    screened_out = db.query(Article).filter(Article.status == 'SCREENED_OUT').all()
+    screened_out = db.query(Article).filter(Article.status == 'EXCLUDED_SCREENING').all()
     screening_reasons = [a.exclusion_reason for a in screened_out if a.exclusion_reason]
     distribution['screening'] = dict(Counter(screening_reasons))
     

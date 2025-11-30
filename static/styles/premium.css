@@ -23,7 +23,9 @@
 /* Typography Premium */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-html, body, [class*="css"] {
+html,
+body,
+[class*="css"] {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
@@ -199,7 +201,7 @@ h3 {
 }
 
 /* ==================== PROGRESS BAR ==================== */
-.stProgress > div > div {
+.stProgress>div>div {
     background: linear-gradient(90deg, var(--primary) 0%, var(--success) 100%);
     border-radius: 9999px;
 }
@@ -216,7 +218,7 @@ h3 {
 }
 
 /* ==================== RADIO BUTTONS ==================== */
-.stRadio > label {
+.stRadio>label {
     font-weight: 500;
     color: var(--neutral-700);
 }
@@ -249,13 +251,14 @@ hr {
 
 /* ==================== ANIMATIONS ==================== */
 @keyframes fadeIn {
-    from { 
-        opacity: 0; 
-        transform: translateY(10px); 
+    from {
+        opacity: 0;
+        transform: translateY(10px);
     }
-    to { 
-        opacity: 1; 
-        transform: translateY(0); 
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
     }
 }
 
@@ -264,6 +267,14 @@ hr {
 }
 
 /* ==================== SPACING UTILITIES ==================== */
-.spacing-sm { margin-bottom: 0.5rem; }
-.spacing-md { margin-bottom: 1rem; }
-.spacing-lg { margin-bottom: 1.5rem; }
+.spacing-sm {
+    margin-bottom: 0.5rem;
+}
+
+.spacing-md {
+    margin-bottom: 1rem;
+}
+
+.spacing-lg {
+    margin-bottom: 1.5rem;
+}

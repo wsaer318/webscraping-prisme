@@ -56,8 +56,9 @@ Contient toutes les métadonnées et l'état de chaque article.
   - `pdf_path`: Chemin local du fichier PDF
 - **Statut PRISMA (`status`)**
   - `IDENTIFIED`: Importé brut
+  - `EXCLUDED_SEMANTIC_FILTER`: Rejeté par le pré-tri sémantique
   - `SCREENED_IN`: Retenu après lecture Titre/Abstract
-  - `SCREENED_OUT`: Rejeté après lecture Titre/Abstract
+  - `EXCLUDED_SCREENING`: Rejeté après lecture Titre/Abstract
   - `EXCLUDED_ELIGIBILITY`: Rejeté après lecture Texte Complet
   - `INCLUDED`: Inclus dans la revue finale
 - **Analyse IA**

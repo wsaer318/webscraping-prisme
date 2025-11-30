@@ -68,6 +68,38 @@ with col_action:
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
+with st.sidebar:
+    st.subheader("Gestion des Filtres")
+    excluded_by_filter_count = db.query(Article).filter(
+        Article.search_session_id == active_session_id if active_session_id else True,
+        Article.status == "EXCLUDED_SEMANTIC_FILTER"
+    ).count()
+    
+    if excluded_by_filter_count > 0:
+        st.warning(f"{excluded_by_filter_count} articles exclus par filtre sémantique")
+        if st.button("Restaurer les articles", help="Annule le filtre sémantique et restaure tous les articles", use_container_width=True):
+            articles_to_restore = db.query(Article).filter(
+                Article.search_session_id == active_session_id if active_session_id else True,
+                Article.status == "EXCLUDED_SEMANTIC_FILTER"
+            ).all()
+            
+            for art in articles_to_restore:
+                history = ArticleHistory(
+                    article_id=art.id,
+                    previous_status="EXCLUDED_SEMANTIC_FILTER",
+                    new_status="IDENTIFIED",
+                    action="FILTER_UNDONE",
+                    reason="Annulation du filtre sémantique",
+                    user="User"
+                )
+                db.add(history)
+                art.status = "IDENTIFIED"
+            
+            db.commit()
+            st.toast(f"{len(articles_to_restore)} articles restaurés")
+            st.rerun()
+    st.divider()
+
 # Récupérer articles
 if active_session_id:
     articles = db.query(Article).filter(
@@ -174,7 +206,7 @@ else:
         
         if st.button("Lancer le Pré-tri Sémantique"):
             # Mettre à jour la valeur utilisée avec celle de l'input (au cas où modifiée manuellement)
-            current_concepts = concepts_input
+            current_concepts = st.session_state.get('sem_concepts', '')
             from src.concept_filter import filter_articles_semantically
             
             # Préparer les données
@@ -187,7 +219,7 @@ else:
                     'full_text': art.full_text
                 })
             
-            concepts = [c.strip() for c in concepts_input.split(',') if c.strip()]
+            concepts = [c.strip() for c in current_concepts.split(',') if c.strip()]
             mode = "AND" if "AND" in filter_mode else "OR"
             
             with st.spinner("Filtrage sémantique en cours..."):
@@ -221,6 +253,37 @@ else:
                 
                 db.commit()
                 st.success(f"Pré-tri terminé ! {excluded_count} articles exclus sur {len(articles)}.")
+                st.rerun()
+        
+        # Bouton pour annuler le filtre sémantique
+        st.divider()
+        excluded_by_filter_count = db.query(Article).filter(
+            Article.search_session_id == active_session_id if active_session_id else True,
+            Article.status == "EXCLUDED_SEMANTIC_FILTER"
+        ).count()
+        
+        if excluded_by_filter_count > 0:
+            st.caption(f"{excluded_by_filter_count} articles exclus par filtre")
+            if st.button("Annuler le filtre", help="Restaure tous les articles exclus par le filtre sémantique"):
+                articles_to_restore = db.query(Article).filter(
+                    Article.search_session_id == active_session_id if active_session_id else True,
+                    Article.status == "EXCLUDED_SEMANTIC_FILTER"
+                ).all()
+                
+                for art in articles_to_restore:
+                    history = ArticleHistory(
+                        article_id=art.id,
+                        previous_status="EXCLUDED_SEMANTIC_FILTER",
+                        new_status="IDENTIFIED",
+                        action="FILTER_UNDONE",
+                        reason="Annulation du filtre sémantique",
+                        user="User"
+                    )
+                    db.add(history)
+                    art.status = "IDENTIFIED"
+                
+                db.commit()
+                st.toast(f"{len(articles_to_restore)} articles restaurés")
                 st.rerun()
     
     # Récupérer les scores pour le tri
@@ -360,6 +423,11 @@ else:
             # En-tête Article
             st.info(f"**{current_article.title}**")
             st.caption(f"{current_article.authors} | {current_article.year} | {current_article.source}")
+            
+            # Badge Citations
+            if current_article.citation_count is not None:
+                st.markdown(f"**Impact :** **{current_article.citation_count}** citations (Semantic Scholar)")
+            
             if current_article.doi:
                 st.caption(f"DOI: {current_article.doi}")
             

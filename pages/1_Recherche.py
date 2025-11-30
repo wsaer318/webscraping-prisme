@@ -27,37 +27,75 @@ tab1, tab2 = st.tabs(["Mode Automatique", "Mode Avancé"])
 with tab1:
     st.info("Mode recommandé : Recherche sur arXiv avec enrichissement automatique des métadonnées")
     
-    with st.form("auto_search"):
-        # Récupérer la dernière recherche ou valeur par défaut
-        default_query = st.session_state.get('active_session_query', "machine learning")
-        query = st.text_input("Mots-clés de recherche", default_query)
-        
-        # Mode de recherche
-        search_mode = st.radio(
-            "Mode de recherche",
-            ["Nombre fixe", "MAX (Tous les articles disponibles)"],
-            help="Mode MAX : Récupère TOUS les articles disponibles (peut prendre du temps)"
+    # Input HORS du formulaire pour détecter les changements en temps réel
+    default_query = st.session_state.get('active_session_query', "machine learning")
+    query = st.text_input("Mots-clés de recherche", default_query, key="auto_query_input")
+    
+    # Compteur automatique quand la requête change
+    if 'last_counted_query' not in st.session_state:
+        st.session_state.last_counted_query = ""
+    
+    if query and len(query) >= 3 and query != st.session_state.last_counted_query:
+        st.session_state.last_counted_query = query
+        with st.spinner("Comptage..."):
+            arxiv_counter = ArxivScraper()
+            st.session_state.arxiv_result_count = arxiv_counter.get_result_count(query)
+    
+    # Affichage du compteur
+    if 'arxiv_result_count' in st.session_state and st.session_state.arxiv_result_count > 0:
+        st.caption(f"📊 ~{st.session_state.arxiv_result_count:,} articles disponibles sur arXiv")
+    
+    # MODE DE RECHERCHE - HORS DU FORMULAIRE pour changement en temps réel
+    search_mode = st.radio(
+        "Mode de recherche",
+        ["Nombre fixe", "MAX (Tous les articles disponibles)"],
+        help="Mode MAX : Récupère TOUS les articles disponibles (peut prendre du temps)"
+    )
+    
+    # MÉTHODE DE SAISIE en mode Nombre fixe - HORS DU FORMULAIRE
+    if search_mode == "Nombre fixe":
+        input_method = st.radio(
+            "Méthode de saisie",
+            ["Slider", "Saisie manuelle"],
+            horizontal=True,
+            key="input_method_choice"
         )
-        
+    else:
+        input_method = None
+    
+    with st.form("auto_search"):
         col1, col2 = st.columns(2)
         with col1:
             if search_mode == "Nombre fixe":
-                num_results = st.slider("Nombre de résultats arXiv", 5, 5000, 20)
+                if input_method == "Slider":
+                    num_results = st.slider("Nombre de résultats arXiv", 5, 10000000, 100)
+                else:
+                    num_results = st.number_input(
+                        "Nombre de résultats arXiv",
+                        min_value=5,
+                        max_value=10000000,
+                        value=100,
+                        step=10,
+                        help="Tapez directement le nombre souhaité"
+                    )
             else:
                 # Mode MAX
-                enable_cap = st.checkbox("Plafond de sécurité", value=True, 
+                enable_cap = st.checkbox("Plafond de sécurité", value=False, 
+                                        key="enable_cap_v2",  # Clé unique pour forcer refresh
                                         help="Limite le nombre max d'articles pour éviter les recherches trop longues")
                 if enable_cap:
-                    cap_value = st.select_slider(
+                    cap_value = st.number_input(
                         "Plafond maximum",
-                        options=[100, 500, 1000, 2000, 5000, 10000],
-                        value=1000
+                        min_value=100,
+                        max_value=10000000,
+                        value=10000,
+                        step=1000,
+                        help="Nombre maximum d'articles à télécharger"
                     )
                     num_results = cap_value
-                    st.caption(f"⚠️ Max {cap_value} articles")
+                    st.caption(f"⚠️ Max {cap_value:,} articles")
                 else:
-                    num_results = 999999  # Valeur "illimitée"
-                    st.warning("⚠️ Aucune limite ! Peut prendre plusieurs heures.")
+                    num_results = 999999999  # Valeur "illimitée"
         
         with col2:
             enrich = st.checkbox("Enrichir avec PubMed/Crossref (DOIs)", value=True, 
@@ -73,25 +111,37 @@ with tab1:
             progress = st.progress(0)
             status = st.empty()
             
-            # Phase 1: arXiv (principal)
-            status.text("Phase 1/3 : Recherche arXiv avec téléchargement PDF...")
-            progress.progress(0.1)
-            
-            arxiv = ArxivScraper()
-            arxiv_results = arxiv.search(query, max_results=num_results)
-            
-            progress.progress(0.4)
-            
-            # Créer session arXiv
+            # Créer la session AVANT le téléchargement
             session = SearchSession(
                 query=f"{query} [arXiv]",
-                num_results=len(arxiv_results),
-                successful_downloads=sum(1 for r in arxiv_results if r.get('extraction_status') == 'SUCCESS'),
+                num_results=0,  # Sera mis à jour après
+                successful_downloads=0,
                 status='ACTIVE'
             )
             db.add(session)
             db.commit()
             db.refresh(session)
+            
+            # Phase 1: arXiv (principal)
+            status.text("Phase 1/3 : Recherche arXiv avec téléchargement PDF...")
+            progress.progress(0.1)
+            
+            arxiv = ArxivScraper()
+            arxiv_results, total_available = arxiv.search(query, max_results=num_results, session_id=session.id)
+            
+            # Afficher le total disponible si connu
+            # Afficher le total disponible si connu
+            if total_available is not None:
+                st.info(f"📊 {total_available:,} articles disponibles sur arXiv pour cette requête")
+            else:
+                st.info("📊 Nombre total d'articles inconnu (API n'a pas retourné le total)")
+            
+            progress.progress(0.4)
+            
+            # Mettre à jour les stats de la session
+            session.num_results = len(arxiv_results)
+            session.successful_downloads = sum(1 for r in arxiv_results if r.get('extraction_status') == 'SUCCESS')
+            db.commit()
             
             # Debug session ID
             # print(f"DEBUG: Session créée ID={session.id} pour {len(arxiv_results)} résultats")
@@ -220,12 +270,18 @@ with tab1:
                 thread = threading.Thread(target=run_background_analysis, args=(new_ids, query))
                 thread.start()
                 
+                
                 # Lancer récupération PDFs manquants
                 from src.pdf_retriever import auto_retrieve_missing_pdfs
                 pdf_thread = threading.Thread(target=auto_retrieve_missing_pdfs, args=(session.id, 50))
                 pdf_thread.start()
                 
-                st.toast("✓ Analyse IA + Récupération PDFs démarrées en arrière-plan !")
+                # Lancer enrichissement citations (automatique)
+                from src.enrichment import enrich_session_articles
+                citation_thread = threading.Thread(target=enrich_session_articles, args=(session.id,))
+                citation_thread.start()
+                
+                st.toast("Analyse IA + Récupération PDFs + Enrichissement citations lancés en arrière-plan !")
 
 
 # ==================== ONGLET 2: MODE AVANCÉ ====================
@@ -246,7 +302,7 @@ with tab2:
             )
         
         with col2:
-            num_results_adv = st.slider("Nombre de résultats par source", 5, 5000, 20, key="adv_num")
+            num_results_adv = st.slider("Nombre de résultats par source", 5, 10000000, 100, key="adv_num")
         
         submitted_adv = st.form_submit_button("Lancer la recherche avancée")
     

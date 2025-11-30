@@ -16,21 +16,53 @@ class ArxivScraper:
         self.base_url = "http://export.arxiv.org/api/query"
         self.results_per_page = 100
     
-    def search(self, query: str, max_results: int = 100) -> List[Dict]:
+    def get_result_count(self, query: str) -> int:
+        """
+        Requête rapide pour obtenir le nombre total de résultats disponibles
+        
+        Args:
+            query: Requête de recherche
+            
+        Returns:
+            Nombre total d'articles disponibles sur arXiv
+        """
+        try:
+            encoded_query = urllib.parse.quote_plus(query)
+            url = f"{self.base_url}?search_query=ti:({encoded_query})+OR+abs:({encoded_query})&start=0&max_results=1"
+            
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                xml_content = response.read().decode('utf-8')
+            
+            root = ET.fromstring(xml_content)
+            ns = {'opensearch': 'http://a9.com/-/spec/opensearch/1.1/'}
+            
+            total_elem = root.find('opensearch:totalResults', ns)
+            if total_elem is not None:
+                return int(total_elem.text)
+            
+            return 0
+        except Exception as e:
+            print(f"[arXiv Count] Error: {e}")
+            return 0
+    
+    def search(self, query: str, max_results: int = 100, session_id=None):
         """
         Recherche sur arXiv avec remplacement automatique des articles sans PDF
         
         Args:
             query: Requête de recherche
             max_results: Nombre d'articles **avec PDF** souhaités
+            session_id: ID de session optionnel pour organiser les PDFs
             
         Returns:
-            Liste de max_results dictionnaires avec PDFs téléchargés
+            Tuple: (liste de dictionnaires avec PDFs, nombre total disponible)
         """
         results_with_pdf = []
         start = 0
         max_attempts = max_results * 3  # Limite anti-boucle infinie
         attempts = 0
+        total_available = None  # Sera rempli à la première requête
         
         print(f"[arXiv] Objectif : {max_results} articles avec PDF")
         
@@ -39,7 +71,7 @@ class ArxivScraper:
             
             # Encoder la query
             encoded_query = urllib.parse.quote_plus(query)
-            url = f"{self.base_url}?search_query=all:{encoded_query}&start={start}&max_results={batch_size}"
+            url = f"{self.base_url}?search_query=ti:({encoded_query})+OR+abs:({encoded_query})&start={start}&max_results={batch_size}"
             
             print(f"[arXiv] Fetching {start}-{start+batch_size}... ({len(results_with_pdf)}/{max_results} OK)")
             
@@ -52,7 +84,17 @@ class ArxivScraper:
                 root = ET.fromstring(xml_content)
                 
                 # Namespace arXiv
-                ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                ns = {
+                    'atom': 'http://www.w3.org/2005/Atom',
+                    'opensearch': 'http://a9.com/-/spec/opensearch/1.1/'
+                }
+                
+                # Récupérer le nombre total de résultats (seulement à la première requête)
+                if start == 0:
+                    total_results_elem = root.find('opensearch:totalResults', ns)
+                    if total_results_elem is not None:
+                        total_available = int(total_results_elem.text)
+                        print(f"[arXiv] Total disponible pour cette requête : {total_available:,} articles")
                 
                 entries = root.findall('atom:entry', ns)
                 
@@ -110,7 +152,9 @@ class ArxivScraper:
                         try:
                             pdf_path, full_text, status, method = self._download_and_extract_pdf(
                                 pdf_link,
-                                title
+                                title,
+                                session_id=session_id,
+                                query=query
                             )
                             
                             if status == "SUCCESS":
@@ -150,21 +194,35 @@ class ArxivScraper:
         
         print(f"[arXiv] Terminé : {len(results_with_pdf)}/{max_results} articles avec PDF")
         
-        return results_with_pdf
+        return results_with_pdf, total_available
     
-    def _download_and_extract_pdf(self, pdf_url, title):
+    def _download_and_extract_pdf(self, pdf_url, title, session_id=None, query=""):
         """Télécharge et extrait le texte d'un PDF arXiv"""
         
         # Nettoyer le titre pour le nom de fichier
         safe_title = "".join([c if c.isalnum() or c in (' ', '_') else '_' for c in title])[:100]
         
-        # Créer le dossier
-        save_dir = os.path.join('data', '0_raw', 'pdfs', 'arxiv')
+        # Créer dossier par session
+        if session_id:
+            # Nettoyer le nom de requête
+            safe_query = "".join([c if c.isalnum() else '_' for c in query])[:50]
+            folder_name = f"session_{session_id}_{safe_query}"
+        else:
+            folder_name = "arxiv"
+        
+        save_dir = os.path.join('data', '0_raw', 'pdfs', folder_name)
         os.makedirs(save_dir, exist_ok=True)
         
         pdf_filename = f"{safe_title}.pdf"
         pdf_path = os.path.join(save_dir, pdf_filename)
         
+        # Vérifier si le fichier existe déjà (Reprise)
+        if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1000:
+            print(f"  [CACHE] PDF déjà présent : {pdf_filename}")
+            # On tente quand même l'extraction si elle n'avait pas été faite ou pour récupérer le texte
+            full_text, status, method = extract_text_from_pdf(pdf_path)
+            return pdf_path, full_text, status, method
+
         # Télécharger
         req = urllib.request.Request(pdf_url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=30) as response:

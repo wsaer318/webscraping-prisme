@@ -1,50 +1,85 @@
 # -*- coding: utf-8 -*-
 """
 Génération du diagramme PRISMA Flow
-Conforme aux standards PRISMA 2020
+Conforme aux standards PRISMA 2020 - VERSION DYNAMIQUE avec traçabilité
 """
-from src.database import get_db, Article, ArticleHistory
+from src.database import (
+    get_db, Article, ArticleHistory, SearchSession,
+    SemanticFilterRun, AIAnalysisRun
+)
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyBboxPatch
 from pathlib import Path
+import json
 
 
-def get_prisma_counts(db):
-    """Récupère les comptages pour le diagramme PRISMA"""
+def get_prisma_counts(db, session_id=None):
+    """
+    Récupère les comptages pour le diagramme PRISMA depuis la traçabilité
     
+    Args:
+        db: Session database
+        session_id: ID de session optionnel pour filtrer
+        
+    Returns:
+        dict avec tous les comptages et métadonnées
+    """
     counts = {}
     
-    # Identification : TOUS les articles dans la BDD (historique complet)
-    counts['identified'] = db.query(Article).count()
+    # Filtre session
+    session_filter = (Article.search_session_id == session_id) if session_id else True
     
-    # Screening : Articles qui ont été traités (pas ceux encore IDENTIFIED)
-    counts['screened'] = db.query(Article).filter(
-        Article.status != 'IDENTIFIED'  # Tous sauf IDENTIFIED = ont été screenés
-    ).count()
+    # === IDENTIFICATION ===
+    counts['identified'] = db.query(Article).filter(session_filter).count()
     
-    # Exclus au screening
-    counts['screened_out'] = db.query(Article).filter(
-        Article.status == 'SCREENED_OUT'
-    ).count()
+    # Déduplication (placeholder pour future implémentation)
+    counts['after_dedup'] = counts['identified']
     
-    # Passés au screening (pour éligibilité)
+    # === PRE-SCREENING (Semantic Filter) ===
+    semantic_run = db.query(SemanticFilterRun).filter(
+        SemanticFilterRun.search_session_id == session_id if session_id else True
+    ).order_by(SemanticFilterRun.created_at.desc()).first()
+    
+    if semantic_run:
+        counts['semantic_filter_applied'] = True
+        counts['semantic_concepts'] = json.loads(semantic_run.concepts)
+        counts['semantic_threshold'] = semantic_run.threshold
+        counts['semantic_mode'] = semantic_run.mode
+        counts['semantic_excluded'] = semantic_run.articles_excluded
+        counts['after_semantic'] = semantic_run.articles_retained
+    else:
+        counts['semantic_filter_applied'] = False
+        counts['semantic_excluded'] = 0
+        counts['after_semantic'] = counts['after_dedup']
+    
+    # === SCREENING ===
     counts['screened_in'] = db.query(Article).filter(
-        Article.status.in_(['SCREENED_IN', 'INCLUDED', 'EXCLUDED_ELIGIBILITY'])
+        session_filter,
+        Article.status == 'SCREENED_IN'
     ).count()
     
-    # Éligibilité : Articles évalués en full-text
+    counts['screened_out'] = db.query(Article).filter(
+        session_filter,
+        Article.status == 'EXCLUDED_SCREENING'
+    ).count()
+    
+    counts['screened'] = counts['screened_in'] + counts['screened_out']
+    
+    # === ELIGIBILITY ===
     counts['eligibility_assessed'] = db.query(Article).filter(
+        session_filter,
         Article.status.in_(['INCLUDED', 'EXCLUDED_ELIGIBILITY'])
     ).count()
     
-    # Exclus éligibilité
     counts['excluded_eligibility'] = db.query(Article).filter(
+        session_filter,
         Article.status == 'EXCLUDED_ELIGIBILITY'
     ).count()
     
-    # Inclusion finale
+    # === INCLUDED ===
     counts['included'] = db.query(Article).filter(
+        session_filter,
         Article.status == 'INCLUDED'
     ).count()
     
@@ -114,32 +149,56 @@ def generate_prisma_diagram(output_path: str = None) -> str:
     
     add_arrow(5, 12, 5, 10.5)
     
+    # Pré-filtre sémantique (si appliqué)
+    y_current = 10.5
+    if counts['semantic_filter_applied']:
+        concepts_str = ', '.join(counts['semantic_concepts'][:2])  # Max 2 concepts
+        if len(counts['semantic_concepts']) > 2:
+            concepts_str += '...'
+        
+        add_box(2, y_current-1.2, 6, 1.2,
+                f"Après pré-filtre sémantique\n({concepts_str}, seuil={counts['semantic_threshold']})\n(n = {counts['after_semantic']})",
+                '#FFF3E0', fontsize=10, weight='bold')
+        
+        # Exclus sémantique (droite)
+        add_box(8.3, y_current-1.2, 1.5, 1.2,
+                f"Exclus\nsémantique\n(n = {counts['semantic_excluded']})",
+                color_exc, fontsize=9)
+        
+        add_arrow(5, y_current-1.2, 5, y_current-2.7)
+        y_current = y_current - 2.7
+    else:
+        add_arrow(5, y_current, 5, y_current-1.5)
+        y_current = y_current - 1.5
+    
     # Screening
-    add_box(2, 9.3, 6, 1.2,
+    add_box(2, y_current-1.2, 6, 1.2,
             f"Articles screenés\n(n = {counts['screened']})",
             color_screen, fontsize=12, weight='bold')
     
     # Exclus screening
-    add_box(0.2, 9.3, 1.5, 1.2,
+    add_box(0.2, y_current-1.2, 1.5, 1.2,
             f"Exclus\nscreening\n(n = {counts['screened_out']})",
             color_exc, fontsize=9)
     
-    add_arrow(5, 9.3, 5, 7.8)
+    add_arrow(5, y_current-1.2, 5, y_current-2.7)
+    y_current = y_current - 2.7
     
     # Éligibilité
-    add_box(2, 6.6, 6, 1.2,
+    add_box(2, y_current-1.2, 6, 1.2,
             f"Éligibilité évaluée\n(texte complet)\n(n = {counts['eligibility_assessed']})",
             color_elig, fontsize=11, weight='bold')
     
     # Exclus éligibilité
-    add_box(0.2, 6.6, 1.5, 1.2,
+    add_box(0.2, y_current-1.2, 1.5, 1.2,
             f"Exclus\néligibilité\n(n = {counts['excluded_eligibility']})",
             color_exc, fontsize=9)
     
-    add_arrow(5, 6.6, 5, 5.1)
+    add_arrow(5, y_current-1.2, 5, y_current-2.7)
+    y_current = y_current - 2.7
     
     # Inclusion finale
-    add_box(2, 3.9, 6, 1.2,
+    add_box(2, y_current-1.2, 6, 1.2,
             f"Articles inclus\ndans la synthèse\n(n = {counts['included']})",
             color_inc, fontsize=12, weight='bold')
     
